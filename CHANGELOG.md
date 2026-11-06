@@ -104,6 +104,10 @@
 3. **真机部署验证**：
    - 生成 `app-debug.apk` (5.6MB)。
    - 通过 ADB 成功推送到手机并启动，截取真机运行截屏归档。
+4. **GitHub 远程仓库建立与全量推送**：
+   - 通过 GitHub API 自动为用户创建全新公开仓库 `353154/MobileBox`。
+   - 关联远程 origin 并完成首次主线代码推送：`https://github.com/353154/MobileBox`。
+
 
 
 
