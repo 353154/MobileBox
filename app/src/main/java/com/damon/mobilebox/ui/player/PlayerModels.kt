@@ -23,7 +23,9 @@ data class VideoDetailData(
     val tags: List<String>,
     val description: String,
     val posterUrl: String,
-    val routes: List<VideoRoute>
+    val routes: List<VideoRoute>,
+    val actor: String = "",
+    val director: String = ""
 ) {
     companion object {
         // 全局国内官方高可用超高速 CDN 测试片源 (字节跳动火山引擎官方流，国内三网秒开)

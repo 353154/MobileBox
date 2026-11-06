@@ -12,10 +12,18 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -46,6 +55,8 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.damon.mobilebox.data.tvbox.LiveChannel
+import com.damon.mobilebox.data.tvbox.LiveChannelGroup
 import com.damon.mobilebox.data.tvbox.TvBoxParser
 import kotlinx.coroutines.delay
 
@@ -55,12 +66,19 @@ fun MobileVideoPlayer(
     streamUrl: String,
     title: String,
     modifier: Modifier = Modifier,
-    onBackClick: () -> Unit = {}
+    onBackClick: () -> Unit = {},
+    isLive: Boolean = false,
+    channelGroups: List<LiveChannelGroup> = emptyList(),
+    currentChannel: LiveChannel? = null,
+    onSelectChannel: ((LiveChannel) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val activity = remember(context) { findActivity(context) }
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    // 是否展开横屏电视直播换台半透明抽屉
+    var isChannelDrawerOpen by remember { mutableStateOf(false) }
 
     // 初始化并持有具备移动端专有 UA 与跨协议重定向能力的 ExoPlayer
     val exoPlayer = remember(context) {
@@ -97,6 +115,7 @@ fun MobileVideoPlayer(
             val insetsController = WindowCompat.getInsetsController(window, window.decorView)
             if (isLandscape) {
                 // 当前是横屏，切回竖屏并恢复系统栏
+                isChannelDrawerOpen = false
                 act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 insetsController.show(WindowInsetsCompat.Type.systemBars())
             } else {
@@ -108,9 +127,28 @@ fun MobileVideoPlayer(
         }
     }
 
-    // 拦截物理返回键：横屏模式下按返回键优先退出横屏
-    BackHandler(enabled = isLandscape) {
-        toggleFullScreen()
+    // 拦截物理返回键：若抽屉打开则优先关闭抽屉，否则横屏下退出横屏
+    BackHandler(enabled = isLandscape || isChannelDrawerOpen) {
+        if (isChannelDrawerOpen) {
+            isChannelDrawerOpen = false
+        } else if (isLandscape) {
+            toggleFullScreen()
+        }
+    }
+
+    // 监听横竖屏变化，沉浸式隐藏或恢复系统状态栏与虚拟导航栏
+    LaunchedEffect(isLandscape) {
+        activity?.let { act ->
+            val window = act.window
+            val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+            if (isLandscape) {
+                insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                isChannelDrawerOpen = false
+                insetsController.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
     }
 
     // 离开播放器时，确保恢复竖屏与系统栏
@@ -209,9 +247,9 @@ fun MobileVideoPlayer(
         }
     }
 
-    // 控制栏自动隐藏定时器 (播放中 4 秒无交互自动淡出)
-    LaunchedEffect(areControlsVisible, isPlaying) {
-        if (areControlsVisible && isPlaying) {
+    // 控制栏自动隐藏定时器 (播放中且未展开换台抽屉时，4 秒无交互自动淡出)
+    LaunchedEffect(areControlsVisible, isPlaying, isChannelDrawerOpen) {
+        if (areControlsVisible && isPlaying && !isChannelDrawerOpen) {
             delay(4000)
             areControlsVisible = false
         }
@@ -220,11 +258,25 @@ fun MobileVideoPlayer(
     Box(
         modifier = modifier
             .background(Color.Black)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                areControlsVisible = !areControlsVisible
+            .pointerInput(isLandscape, isLive, isChannelDrawerOpen) {
+                detectTapGestures(
+                    onTap = { offset ->
+                        if (isChannelDrawerOpen) {
+                            // 再次点击屏幕：关闭换台抽屉与控制栏
+                            isChannelDrawerOpen = false
+                            areControlsVisible = false
+                        } else {
+                            // 横屏全屏直播模式下：轻点屏幕左侧 25% 区域直接呼出半透明换台列表
+                            if (isLandscape && isLive && offset.x < size.width * 0.25f) {
+                                isChannelDrawerOpen = true
+                                areControlsVisible = true
+                            } else {
+                                // 点击其他区域：再次点击切换/隐藏控制栏
+                                areControlsVisible = !areControlsVisible
+                            }
+                        }
+                    }
+                )
             }
     ) {
         // 底层视频画面渲染视图
@@ -248,6 +300,24 @@ fun MobileVideoPlayer(
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        // 横屏直播边缘滑动呼出检测区 (手指从屏幕最左侧向右滑入呼出抽屉)
+        if (isLandscape && isLive && !isChannelDrawerOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(48.dp)
+                    .align(Alignment.CenterStart)
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { _, dragAmount ->
+                            if (dragAmount > 15) {
+                                isChannelDrawerOpen = true
+                                areControlsVisible = true
+                            }
+                        }
+                    }
+            )
+        }
 
         // 中间缓冲加载菊花指示器
         if (isLoading && playbackError == null) {
@@ -307,7 +377,7 @@ fun MobileVideoPlayer(
 
         // 浮层自定义控制器
         AnimatedVisibility(
-            visible = areControlsVisible,
+            visible = areControlsVisible && !isChannelDrawerOpen,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -317,7 +387,7 @@ fun MobileVideoPlayer(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.45f))
             ) {
-                // 1. 顶部栏 (返回键 + 视频标题 + 清晰度标签)
+                // 1. 顶部栏 (返回键 + 视频标题 + 换台按钮 + 标签)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -357,12 +427,44 @@ fun MobileVideoPlayer(
                         modifier = Modifier.weight(1f)
                     )
 
+                    // 如果处于横屏全屏电视直播状态，显示显眼的“换台”按钮
+                    if (isLandscape && isLive) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .clickable {
+                                    isChannelDrawerOpen = true
+                                }
+                                .padding(end = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Menu,
+                                    contentDescription = "换台",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "换台",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
                     Surface(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                        color = if (isLive) Color(0xFFE50914) else MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
-                            text = if (isLandscape) "全屏影院" else "硬解加速",
+                            text = if (isLive) "LIVE 电视直播" else if (isLandscape) "全屏影院" else "硬解加速",
                             color = Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
@@ -371,29 +473,31 @@ fun MobileVideoPlayer(
                     }
                 }
 
-                // 2. 中央大播放/暂停与快进快退控制行
+                // 2. 中央大播放/暂停控制行
                 Row(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalArrangement = Arrangement.spacedBy(32.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 后退 10 秒
-                    IconButton(
-                        onClick = {
-                            val target = (exoPlayer.currentPosition - 10000).coerceAtLeast(0)
-                            exoPlayer.seekTo(target)
-                        },
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.4f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Replay10,
-                            contentDescription = "快退10秒",
-                            tint = Color.White,
-                            modifier = Modifier.size(26.dp)
-                        )
+                    if (!isLive) {
+                        // 点播模式后退 10 秒
+                        IconButton(
+                            onClick = {
+                                val target = (exoPlayer.currentPosition - 10000).coerceAtLeast(0)
+                                exoPlayer.seekTo(target)
+                            },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.4f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Replay10,
+                                contentDescription = "快退10秒",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
 
                     // 播放 / 暂停大按钮
@@ -414,23 +518,25 @@ fun MobileVideoPlayer(
                         )
                     }
 
-                    // 前进 10 秒
-                    IconButton(
-                        onClick = {
-                            val target = (exoPlayer.currentPosition + 10000).coerceAtMost(duration)
-                            exoPlayer.seekTo(target)
-                        },
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.4f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Forward10,
-                            contentDescription = "快进10秒",
-                            tint = Color.White,
-                            modifier = Modifier.size(26.dp)
-                        )
+                    if (!isLive) {
+                        // 点播模式前进 10 秒
+                        IconButton(
+                            onClick = {
+                                val target = (exoPlayer.currentPosition + 10000).coerceAtMost(duration)
+                                exoPlayer.seekTo(target)
+                            },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.4f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Forward10,
+                                contentDescription = "快进10秒",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
                 }
 
@@ -441,44 +547,262 @@ fun MobileVideoPlayer(
                         .align(Alignment.BottomCenter)
                         .padding(horizontal = 16.dp, vertical = if (isLandscape) 16.dp else 8.dp)
                 ) {
-                    Slider(
-                        value = if (duration > 0) (currentPosition.toFloat() / duration).coerceIn(0f, 1f) else 0f,
-                        onValueChange = { ratio ->
-                            val targetMs = (ratio * duration).toLong()
-                            exoPlayer.seekTo(targetMs)
-                            currentPosition = targetMs
-                        },
-                        colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.35f)
-                        ),
-                        modifier = Modifier.fillMaxWidth().height(22.dp)
-                    )
+                    if (!isLive) {
+                        Slider(
+                            value = if (duration > 0) (currentPosition.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+                            onValueChange = { ratio ->
+                                val targetMs = (ratio * duration).toLong()
+                                exoPlayer.seekTo(targetMs)
+                                currentPosition = targetMs
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.35f)
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(22.dp)
+                        )
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${formatTime(currentPosition)} / ${formatTime(duration)}",
+                                color = Color.White.copy(alpha = 0.9f),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+
+                            // 核心：全屏/横屏切换按钮
+                            IconButton(
+                                onClick = { toggleFullScreen() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isLandscape) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = if (isLandscape) "退出全屏" else "全屏横屏",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        // 直播专属精简底栏：实时信号指示与全屏切换
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFFE50914),
+                                    modifier = Modifier.size(8.dp)
+                                ) {}
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "实时直播信号 · 广播源",
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { toggleFullScreen() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isLandscape) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = if (isLandscape) "退出全屏" else "全屏横屏",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 横屏全屏电视直播：左侧滑动/轻点半透明换台抽屉
+        AnimatedVisibility(
+            visible = isLandscape && isLive && isChannelDrawerOpen,
+            enter = slideInHorizontally { -it } + fadeIn(),
+            exit = slideOutHorizontally { -it } + fadeOut(),
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(320.dp)
+                .align(Alignment.CenterStart)
+        ) {
+            Surface(
+                color = Color(0xF210141D),
+                shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                shadowElevation = 16.dp,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        // 消费内部点击，防止点击列表空白处导致抽屉意外关闭
+                    }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 12.dp)
+                ) {
+                    // 抽屉标题栏
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "${formatTime(currentPosition)} / ${formatTime(duration)}",
-                            color = Color.White.copy(alpha = 0.9f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.LiveTv,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "电视台节目单",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
 
-                        // 核心：全屏/横屏切换按钮 (真实调用 Activity 旋转与系统栏隐藏)
                         IconButton(
-                            onClick = { toggleFullScreen() },
-                            modifier = Modifier.size(36.dp)
+                            onClick = { isChannelDrawerOpen = false },
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
-                                imageVector = if (isLandscape) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                contentDescription = if (isLandscape) "退出全屏" else "全屏横屏",
-                                tint = Color.White,
-                                modifier = Modifier.size(24.dp)
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "关闭",
+                                tint = Color.White.copy(alpha = 0.7f),
+                                modifier = Modifier.size(18.dp)
                             )
+                        }
+                    }
+
+                    // 分类横向滚动药丸
+                    var drawerGroupIndex by remember { mutableIntStateOf(-1) }
+                    val drawerCategoryList = remember(channelGroups) {
+                        val allChannels = channelGroups.flatMap { it.channels }
+                        if (allChannels.isEmpty()) emptyList()
+                        else listOf("全部" to allChannels) + channelGroups.map { it.groupName to it.channels }
+                    }
+
+                    if (drawerCategoryList.size > 1) {
+                        LazyRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(drawerCategoryList.indices.toList()) { idx ->
+                                val (grpName, _) = drawerCategoryList[idx]
+                                val isSelected = idx == (drawerGroupIndex + 1)
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
+                                    modifier = Modifier.clickable { drawerGroupIndex = idx - 1 }
+                                ) {
+                                    Text(
+                                        text = grpName,
+                                        color = if (isSelected) Color.White else Color.White.copy(alpha = 0.7f),
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    val drawerChannels = remember(drawerGroupIndex, drawerCategoryList, channelGroups) {
+                        if (drawerGroupIndex == -1 || drawerCategoryList.isEmpty()) {
+                            channelGroups.flatMap { it.channels }
+                        } else {
+                            drawerCategoryList.getOrNull(drawerGroupIndex + 1)?.second ?: emptyList()
+                        }
+                    }
+
+                    // 频道卡片列表
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(drawerChannels) { channel ->
+                            val isCurrent = channel.url == currentChannel?.url || channel.name == currentChannel?.name
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.04f),
+                                border = if (isCurrent) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSelectChannel?.invoke(channel)
+                                        isChannelDrawerOpen = false
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isCurrent) {
+                                        Icon(
+                                            imageVector = Icons.Default.VolumeUp,
+                                            contentDescription = "正在播放",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Tv,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    }
+
+                                    Text(
+                                        text = channel.name,
+                                        color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    if (isCurrent) {
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "播放中",
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

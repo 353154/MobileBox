@@ -3,13 +3,33 @@ package com.damon.mobilebox.data.tvbox
 import com.google.gson.annotations.SerializedName
 
 // ==========================================
-// 1. TVBox 订阅配置根结构
+// 1. TVBox 订阅配置根结构 (兼容单仓与多仓)
 // ==========================================
 data class TvBoxConfig(
     val spider: String? = null,
+    val wallpaper: String? = null,
     val sites: List<TvBoxSite>? = null,
-    val lives: List<TvBoxLive>? = null
+    val lives: List<TvBoxLive>? = null,
+    val parses: List<TvBoxParse>? = null,
+    val rules: List<TvBoxRule>? = null,
+    val urls: Any? = null // 多仓核心：支持 List<TvBoxWarehouse> 或 List<String>
 )
+
+/**
+ * TVBox 多仓子线路结构
+ */
+data class TvBoxWarehouse(
+    val name: String,
+    val url: String
+)
+
+/**
+ * 订阅结果统一封装：自动区分单仓 vs 多仓
+ */
+sealed class TvBoxSubscriptionResult {
+    data class SingleConfig(val config: TvBoxConfig, val rawUrl: String) : TvBoxSubscriptionResult()
+    data class MultiWarehouse(val warehouses: List<TvBoxWarehouse>, val rawUrl: String) : TvBoxSubscriptionResult()
+}
 
 data class TvBoxSite(
     val key: String,
@@ -20,12 +40,52 @@ data class TvBoxSite(
     val quickSearch: Int? = 1,
     val filterable: Int? = 1,
     val ext: Any? = null
-)
+) {
+    val typeLabel: String
+        get() = when (type) {
+            0 -> "CMS-XML"
+            1 -> "CMS-JSON"
+            3 -> "Spider爬虫"
+            4 -> "AppYs原生"
+            else -> "标准源"
+        }
+}
 
 data class TvBoxLive(
     val name: String,
     val type: Int? = 0,
-    val url: String? = null
+    val url: String? = null,
+    val playerType: Int? = null,
+    val ua: String? = null,
+    val epg: String? = null,
+    val logo: String? = null
+)
+
+data class LiveChannelGroup(
+    val groupName: String,
+    val channels: List<LiveChannel>
+)
+
+data class LiveChannel(
+    val name: String,
+    val url: String,
+    val urls: List<String> = listOf(url),
+    val group: String = "默认分组",
+    val epg: String? = null,
+    val logo: String? = null
+)
+
+data class TvBoxParse(
+    val name: String,
+    val type: Int = 0, // 0: web/sniffer, 1: json, 2: parallel
+    val url: String,
+    val ext: Any? = null
+)
+
+data class TvBoxRule(
+    val name: String? = null,
+    val hosts: List<String>? = null,
+    val regex: List<String>? = null
 )
 
 // ==========================================
@@ -73,6 +133,12 @@ data class MacCmsVod(
     val vodScore: String? = null,
     @SerializedName("vod_content")
     val vodContent: String? = null,
+    @SerializedName("vod_actor")
+    val vodActor: String? = null,
+    @SerializedName("vod_director")
+    val vodDirector: String? = null,
+    @SerializedName("vod_area")
+    val vodArea: String? = null,
     @SerializedName("vod_play_from")
     val vodPlayFrom: String? = null,
     @SerializedName("vod_play_url")

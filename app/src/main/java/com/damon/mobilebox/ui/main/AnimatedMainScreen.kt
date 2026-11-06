@@ -1,6 +1,8 @@
 package com.damon.mobilebox.ui.main
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -40,6 +42,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import com.damon.mobilebox.ui.player.findActivity
+import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +65,7 @@ import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.category.CategoryScreen
 import com.damon.mobilebox.ui.profile.ProfileScreen
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
+import com.damon.mobilebox.ui.player.MobileVideoPlayer
 import com.damon.mobilebox.ui.player.VideoDetailData
 import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.components.TvBoxSubscriptionDialog
@@ -76,7 +82,7 @@ fun AnimatedMainScreen(
     themeManager: ThemeManager,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
-    onNavigateToDetail: (String) -> Unit = {}
+    onNavigateToDetail: (VideoDetailData) -> Unit = {}
 ) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
@@ -96,12 +102,6 @@ fun AnimatedMainScreen(
 
     LaunchedEffect(Unit) {
         TvBoxRepository.initFromCache(context)
-    }
-
-    LaunchedEffect(selectedSite) {
-        selectedSite?.let { site ->
-            toastMessage = "当前激活站点 · ${site.name}"
-        }
     }
 
     LaunchedEffect(toastMessage) {
@@ -150,24 +150,30 @@ fun AnimatedMainScreen(
                     }
                 }
                 else -> {
+                    val mainConfig = LocalConfiguration.current
+                    val isMainLandscape = mainConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+
                     Scaffold(
                         containerColor = Color.Transparent,
                         bottomBar = {
-                            AnimatedBottomNavigationBar(
-                                selectedIndex = pagerState.currentPage,
-                                onTabSelected = { index ->
-                                    coroutineScope.launch {
-                                        pagerState.animateScrollToPage(index)
+                            if (!isMainLandscape) {
+                                AnimatedBottomNavigationBar(
+                                    selectedIndex = pagerState.currentPage,
+                                    onTabSelected = { index ->
+                                        coroutineScope.launch {
+                                            pagerState.animateScrollToPage(index)
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            }
                         }
                     ) { paddingValues ->
                         HorizontalPager(
                             state = pagerState,
+                            userScrollEnabled = false,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(bottom = paddingValues.calculateBottomPadding())
+                                .padding(bottom = if (!isMainLandscape) paddingValues.calculateBottomPadding() else 0.dp)
                         ) { page ->
                             when (page) {
                                 0 -> {
@@ -182,7 +188,7 @@ fun AnimatedMainScreen(
                                         HomeGridContent(
                                             onMovieClick = { detail ->
                                                 TvBoxRepository.selectedDetail = detail
-                                                onNavigateToDetail(detail.id)
+                                                onNavigateToDetail(detail)
                                             },
                                             onConfigureSubscription = { showSourceDialog = true },
                                             onShowToast = { toastMessage = it },
@@ -195,14 +201,14 @@ fun AnimatedMainScreen(
                                     CategoryScreen(
                                         onMovieClick = { detail ->
                                             TvBoxRepository.selectedDetail = detail
-                                            onNavigateToDetail(detail.id)
+                                            onNavigateToDetail(detail)
                                         },
                                         onShowToast = { toastMessage = it },
                                         sharedTransitionScope = sharedTransitionScope,
                                         animatedVisibilityScope = animatedVisibilityScope
                                     )
                                 }
-                                2 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                2 -> Box(Modifier.fillMaxSize().let { if (!isMainLandscape) it.statusBarsPadding() else it }) {
                                     LiveScreenContent(
                                         onConfigureSubscription = { showSourceDialog = true },
                                         onShowToast = { toastMessage = it }
@@ -435,13 +441,7 @@ fun HomeGridContent(
                         movieId = movie.id,
                         sharedTransitionScope = sharedTransitionScope,
                         animatedVisibilityScope = animatedVisibilityScope,
-                        modifier = animateItem(
-                            fadeInSpec = androidx.compose.animation.core.tween(durationMillis = 400),
-                            placementSpec = androidx.compose.animation.core.spring(
-                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                                stiffness = androidx.compose.animation.core.Spring.StiffnessLow
-                            )
-                        ),
+                        modifier = Modifier,
                         onClick = {
                             onMovieClick(movie)
                         }
@@ -460,42 +460,333 @@ fun LiveScreenContent(
     onConfigureSubscription: () -> Unit = {},
     onShowToast: (String) -> Unit = {}
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        contentAlignment = Alignment.Center
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    val liveGroups by TvBoxRepository.liveGroups.collectAsState()
+    val liveChannels by TvBoxRepository.liveChannels.collectAsState()
+
+    var isRefreshing by remember { mutableStateOf(false) }
+
+    // 默认选中的电视频道（优先选 CCTV-1 或首个可用频道）
+    var selectedChannel by remember(liveChannels) {
+        mutableStateOf(liveChannels.find { it.name.contains("CCTV-1") } ?: liveChannels.firstOrNull())
+    }
+
+    // 选中的分类：-1 为“全部”，>=0 为 liveGroups 中的具体索引
+    var selectedGroupIndex by remember { mutableIntStateOf(-1) }
+
+    // 是否开启播放（默认进来不播放，点击大播放按钮或点选台后才开始播放）
+    var isPlayerActive by remember { mutableStateOf(false) }
+
+    // 所有可用分类（服务端拉取的数据源联动）
+    val categoryList = remember(liveGroups, liveChannels) {
+        if (liveChannels.isEmpty()) {
+            emptyList()
+        } else {
+            listOf("全部" to liveChannels) + liveGroups.map { it.groupName to it.channels }
+        }
+    }
+
+    // 当前分类下的电视频道列表
+    val displayedChannels = remember(selectedGroupIndex, categoryList, liveChannels) {
+        if (selectedGroupIndex == -1 || categoryList.isEmpty()) {
+            liveChannels
+        } else {
+            categoryList.getOrNull(selectedGroupIndex + 1)?.second ?: liveChannels
+        }
+    }
+
+    StandardPullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            coroutineScope.launch {
+                isRefreshing = true
+                val result = TvBoxRepository.refreshLiveStreams(context)
+                isRefreshing = false
+                if (result.isSuccess) {
+                    onShowToast("已为您刷新最新电视直播列表")
+                } else {
+                    val ex = result.exceptionOrNull()
+                    if (ex !is CancellationException && ex?.message?.contains("coroutine scope", ignoreCase = true) != true) {
+                        onShowToast("刷新直播失败: ${ex?.message}")
+                    }
+                }
+            }
+        },
+        modifier = Modifier.fillMaxSize()
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.LiveTv,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(56.dp)
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "暂无电视频道直播源",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "可在 TVBox 订阅中配置包含直播频道的站点或导入直播列表",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(20.dp))
-            Button(
-                onClick = onConfigureSubscription,
-                shape = RoundedCornerShape(12.dp)
+        if (liveChannels.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Text(text = "配置订阅源")
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LiveTv,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "暂无电视频道直播源",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "可下拉刷新重新抓取，或在 TVBox 订阅中配置直播源",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Button(
+                        onClick = onConfigureSubscription,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(text = "配置订阅源")
+                    }
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (isLandscape) Color.Black else MaterialTheme.colorScheme.background)
+            ) {
+                // 1. 顶部播放框 (竖屏为 16:9 黑色圆角卡片；横屏为 100% 满屏影院直播，同一个 MobileVideoPlayer 节点不被销毁)
+                Box(
+                    modifier = if (isLandscape) {
+                        Modifier.fillMaxSize()
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF0F0F0F))
+                    }
+                ) {
+                    if (isPlayerActive && selectedChannel != null) {
+                        MobileVideoPlayer(
+                            streamUrl = selectedChannel!!.url,
+                            title = selectedChannel!!.name,
+                            modifier = Modifier.fillMaxSize(),
+                            isLive = true,
+                            channelGroups = liveGroups,
+                            currentChannel = selectedChannel,
+                            onSelectChannel = { channel ->
+                                selectedChannel = channel
+                            },
+                            onBackClick = {
+                                if (isLandscape) {
+                                    findActivity(context)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                } else {
+                                    isPlayerActive = false
+                                }
+                            }
+                        )
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // 左上角 LIVE 红色胶囊徽章
+                            Surface(
+                                color = Color(0xFFE50914),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(start = 14.dp, top = 14.dp)
+                            ) {
+                                Text(
+                                    text = "LIVE",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+
+                            // 居中区域：大播放按钮 + 正在直播频道标题 + 节目信息
+                            Column(
+                                modifier = Modifier.align(Alignment.Center),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF1E88E5),
+                                    modifier = Modifier
+                                        .size(58.dp)
+                                        .clickable {
+                                            if (selectedChannel != null) {
+                                                isPlayerActive = true
+                                            } else {
+                                                onShowToast("暂无可用电视频道")
+                                            }
+                                        }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "播放",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(34.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                Text(
+                                    text = "正在直播: ${selectedChannel?.name ?: "CCTV-1 综合 4K"}",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Text(
+                                    text = "当前节目: ${if (selectedChannel?.name?.contains("CCTV-1") == true) "新闻联播" else "实时电视节目"} · 稍后: 焦点访谈",
+                                    color = Color(0xFF42A5F5),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 2. 播放框下方的电视直播分类与电视台列表 (仅在竖屏状态下展示，横屏下完全隐藏避让)
+                if (!isLandscape) {
+                    if (categoryList.size > 1) {
+                        LazyRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(categoryList.indices.toList()) { index ->
+                                val (groupName, channels) = categoryList[index]
+                                val isSelected = index == (selectedGroupIndex + 1)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        selectedGroupIndex = index - 1
+                                    },
+                                    label = {
+                                        Text(
+                                            text = "$groupName (${channels.size})",
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    border = null
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. 电视台列表 (点击不同电视台切换不同的台)
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(displayedChannels) { channel ->
+                            val isCurrent = channel.url == selectedChannel?.url
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedChannel = channel
+                                        isPlayerActive = true // 点击列表中不同电视台切换不同的台并开始播放
+                                    },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isCurrent) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surface
+                                    }
+                                ),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // 左侧图标：选中且播放时为蓝色圆形扬声器，否则为灰色电视机
+                                    if (isCurrent && isPlayerActive) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = Color(0xFF1E88E5),
+                                            modifier = Modifier.size(42.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.VolumeUp,
+                                                    contentDescription = "正在播放",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                            modifier = Modifier.size(42.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Tv,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(14.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = channel.name,
+                                            fontSize = 15.sp,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "正在播: 实时节目 | 稍后: 精彩预告",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -514,6 +805,8 @@ fun ModernSettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
     val currentTheme = themeState.themePreference
+    val selectedWarehouse by TvBoxRepository.selectedWarehouse.collectAsState()
+    val savedSubscriptionUrl by TvBoxRepository.savedSubscriptionUrl.collectAsState()
     var showThemeDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
@@ -556,7 +849,16 @@ fun ModernSettingsScreen(
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = if (selectedSite != null) "当前激活: ${selectedSite.name} · 点击配置订阅或切换" else "暂未添加 TVBox 订阅 · 点击配置",
+                                text = when {
+                                    selectedWarehouse != null && selectedSite != null ->
+                                        "多仓: ${selectedWarehouse!!.name} · 站点: ${selectedSite.name}"
+                                    selectedSite != null ->
+                                        "当前激活: ${selectedSite.name} · 点击配置订阅或切换"
+                                    savedSubscriptionUrl.isNotBlank() ->
+                                        "已配置订阅 · 点击切换站源"
+                                    else ->
+                                        "暂未添加 TVBox 订阅 · 点击配置"
+                                },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp
                             )

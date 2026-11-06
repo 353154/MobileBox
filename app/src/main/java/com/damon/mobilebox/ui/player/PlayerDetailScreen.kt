@@ -2,11 +2,13 @@ package com.damon.mobilebox.ui.player
 
 import android.content.res.Configuration
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,8 +21,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+private val PlayerBackground = Color(0xFF0A0E17)
+private val PlayerPrimary = Color(0xFF2F81F7)
 
 @Composable
 fun PlayerDetailScreen(
@@ -53,32 +59,48 @@ fun PlayerDetailScreen(
 
     var isFavorite by remember { mutableStateOf(false) }
 
-    if (isLandscape) {
-        // 横屏状态：满屏沉浸式影院播放
+    val cleanYear = remember(videoData.year) {
+        val digits = videoData.year.filter { it.isDigit() }
+        val y = digits.take(4).toIntOrNull()
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        if (y != null && y in 1900..(currentYear + 1)) y.toString() else ""
+    }
+
+    val subInfo = remember(cleanYear, videoData.category, videoData.subtitle) {
+        listOfNotNull(
+            cleanYear.takeIf { it.isNotEmpty() },
+            videoData.category.takeIf { it.isNotBlank() && it != "影视" },
+            videoData.subtitle.takeIf { it.isNotBlank() && it != "更新至最新" }
+        ).joinToString(" · ")
+    }
+
+    val parsedRating = remember(videoData.rating) {
+        val score = videoData.rating.trim()
+        val num = score.toDoubleOrNull()
+        if (num != null && num > 0.0) score else null
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (isLandscape) Color.Black else PlayerBackground)
+    ) {
+        // 核心：单实例播放器，横屏占满全屏，竖屏保持 16:9 视窗 (横竖屏切换无缝平滑，ExoPlayer 实例永不销毁)
         MobileVideoPlayer(
             streamUrl = currentEpisode.streamUrl,
             title = "${videoData.title} · ${currentEpisode.name}",
-            modifier = Modifier.fillMaxSize(),
+            modifier = if (isLandscape) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+            },
             onBackClick = onBackClick
         )
-    } else {
-        // 竖屏状态：顶部 16:9 播放器 + 下方交互选集面板
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-        ) {
-            // 顶部 16:9 原生播放器视窗 (嵌入 Media3 ExoPlayer)
-            MobileVideoPlayer(
-                streamUrl = currentEpisode.streamUrl,
-                title = "${videoData.title} · ${currentEpisode.name}",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1.77f),
-                onBackClick = onBackClick
-            )
 
-            // 下方交互面板
+        // 竖屏状态下显示选集与详情面板，横屏下自动隐藏
+        if (!isLandscape) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
@@ -96,58 +118,62 @@ fun PlayerDetailScreen(
                                 text = videoData.title,
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onBackground,
+                                color = Color.White,
                                 modifier = Modifier.weight(1f)
                             )
 
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                            if (parsedRating != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFFFFC107).copy(alpha = 0.16f)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = videoData.rating,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Star,
+                                            contentDescription = null,
+                                            tint = Color(0xFFFFC107),
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "$parsedRating 分",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFFFC107)
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                        if (subInfo.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = subInfo,
+                                fontSize = 13.sp,
+                                color = Color.White.copy(alpha = 0.75f)
+                            )
+                        }
 
-                        Text(
-                            text = "${videoData.year} · ${videoData.category} · ${videoData.subtitle}",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // 规格标签药丸
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            videoData.tags.forEach { tag ->
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        // 规格标签药丸 (现代无边框浅底)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            videoData.tags.take(4).forEach { tag ->
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.White.copy(alpha = 0.08f))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         text = tag,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        color = Color.White.copy(alpha = 0.8f)
                                     )
                                 }
                             }
@@ -155,25 +181,26 @@ fun PlayerDetailScreen(
                     }
                 }
 
-                // 快捷操作工具行 (追剧收藏、缓存离线、投屏、分享)
+                // 快捷操作工具行 (追剧收藏、缓存离线、投屏、分享) - 现代化微拟物饱满底座
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceAround
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         PlayerActionButton(
-                            icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            icon = if (isFavorite) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
                             label = if (isFavorite) "已追剧" else "追剧",
-                            tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            isActive = isFavorite,
                             onClick = {
                                 isFavorite = !isFavorite
-                                onShowToast(if (isFavorite) "已加入您的追剧收藏" else "已取消追剧")
+                                onShowToast(if (isFavorite) "已加入您的追剧清单" else "已取消追剧")
                             }
                         )
                         PlayerActionButton(
                             icon = Icons.Default.Download,
                             label = "离线缓存",
-                            onClick = { onShowToast("后台断点下载任务已添加") }
+                            onClick = { onShowToast("后台高速下载任务已添加") }
                         )
                         PlayerActionButton(
                             icon = Icons.Default.Cast,
@@ -189,35 +216,42 @@ fun PlayerDetailScreen(
                 }
 
                 // 播放线路选择
-                item {
-                    Column {
-                        Text(
-                            text = "播放源线路",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            videoData.routes.forEachIndexed { index, route ->
-                                val isSelected = selectedRouteIndex == index
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    modifier = Modifier.clickable {
-                                        selectedRouteIndex = index
-                                        onShowToast("已切换至线路：${route.routeName}")
-                                    }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                if (videoData.routes.size > 1) {
+                    item {
+                        Column {
+                            Text(
+                                text = "播放源线路",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                videoData.routes.forEachIndexed { index, route ->
+                                    val isSelected = selectedRouteIndex == index
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                if (isSelected) PlayerPrimary.copy(alpha = 0.25f)
+                                                else Color.White.copy(alpha = 0.06f)
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) PlayerPrimary else Color.White.copy(alpha = 0.08f),
+                                                shape = RoundedCornerShape(10.dp)
+                                            )
+                                            .clickable {
+                                                selectedRouteIndex = index
+                                                onShowToast("已切换至线路：${route.routeName}")
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 6.dp)
                                     ) {
                                         Text(
                                             text = route.routeName,
                                             fontSize = 13.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                            color = if (isSelected) Color.White else Color.White.copy(alpha = 0.75f)
                                         )
                                     }
                                 }
@@ -238,12 +272,12 @@ fun PlayerDetailScreen(
                                 text = "选集 (${currentRoute.episodes.size} 集全)",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onBackground
+                                color = Color.White
                             )
                             Text(
                                 text = "更新至最新话",
                                 fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = Color.White.copy(alpha = 0.5f)
                             )
                         }
 
@@ -252,24 +286,33 @@ fun PlayerDetailScreen(
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             items(currentRoute.episodes) { episode ->
                                 val isCurrentPlaying = episode.episodeId == selectedEpisodeId
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isCurrentPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                Box(
                                     modifier = Modifier
-                                        .size(width = 80.dp, height = 48.dp)
+                                        .size(width = 84.dp, height = 48.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (isCurrentPlaying) PlayerPrimary
+                                            else Color.White.copy(alpha = 0.07f)
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isCurrentPlaying) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.08f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
                                         .clickable {
                                             selectedEpisodeId = episode.episodeId
                                             onShowToast("正在切换至：${episode.name}")
-                                        }
+                                        },
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = episode.name,
-                                            fontSize = 13.sp,
-                                            fontWeight = if (isCurrentPlaying) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isCurrentPlaying) Color.White else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
+                                    Text(
+                                        text = episode.name,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isCurrentPlaying) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isCurrentPlaying) Color.White else Color.White.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
@@ -283,14 +326,14 @@ fun PlayerDetailScreen(
                             text = "剧情简介",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onBackground
+                            color = Color.White
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = videoData.description,
                             fontSize = 13.sp,
-                            lineHeight = 20.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            lineHeight = 22.sp,
+                            color = Color.White.copy(alpha = 0.78f)
                         )
                     }
                 }
@@ -303,27 +346,40 @@ fun PlayerDetailScreen(
 fun PlayerActionButton(
     icon: ImageVector,
     label: String,
-    tint: Color = MaterialTheme.colorScheme.onSurface,
+    isActive: Boolean = false,
+    activeColor: Color = PlayerPrimary,
     onClick: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.height(4.dp))
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(
+                    if (isActive) activeColor.copy(alpha = 0.22f)
+                    else Color.White.copy(alpha = 0.08f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isActive) activeColor else Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = label,
             fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            fontWeight = FontWeight.Medium,
+            color = if (isActive) activeColor else Color.White.copy(alpha = 0.75f)
         )
     }
 }

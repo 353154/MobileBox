@@ -3,6 +3,7 @@ package com.damon.mobilebox.ui.components
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -70,76 +71,55 @@ fun StandardPosterCard(
             .clip(RoundedCornerShape(8.dp))
             .clickable { onClick() }
     ) {
-        // 海报图片外部 3D 视差透视容器：强制统一 aspectRatio(0.7f)
+        // 海报图片容器：强制统一 aspectRatio(0.7f)，平滑过渡
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.7f) // 核心修复2：统一比例为 0.7f
-                .graphicsLayer {
-                    if (isParallaxEnabled) {
-                        rotationY = parallax.roll * 14f   // 左右倾斜 3D 旋转 (±14°)
-                        rotationX = -parallax.pitch * 14f // 上下俯仰 3D 旋转 (±14°)
-                        cameraDistance = 14f * density    // 强化 3D 视差相机景深焦距
-                    }
-                }
+                .aspectRatio(0.7f)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            // 内层图片容器：通过反向平移产生强烈的“开窗”景深视差
-            Box(
-                modifier = Modifier
+            if (posterUrl.isNotEmpty()) {
+                val imageModifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        if (isParallaxEnabled) {
-                            translationX = -parallax.roll * 14.dp.toPx()
-                            translationY = -parallax.pitch * 14.dp.toPx()
-                            scaleX = 1.12f
-                            scaleY = 1.12f
+                    .let { m ->
+                        if (sharedTransitionScope != null && animatedVisibilityScope != null && !movieId.isNullOrEmpty()) {
+                            with(sharedTransitionScope) {
+                                m.sharedBounds(
+                                    sharedContentState = rememberSharedContentState(key = "poster_${movieId.trim()}"),
+                                    animatedVisibilityScope = animatedVisibilityScope,
+                                    boundsTransform = { _, _ ->
+                                        tween(durationMillis = 380, easing = FastOutSlowInEasing)
+                                    },
+                                    resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(),
+                                    clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(8.dp))
+                                )
+                            }
+                        } else {
+                            m
                         }
                     }
-            ) {
-                if (posterUrl.isNotEmpty()) {
-                    // 核心修复3：sharedBounds 必须放在 clip 之前！
-                    val imageModifier = Modifier
-                        .fillMaxSize()
-                        .let { m ->
-                            if (sharedTransitionScope != null && animatedVisibilityScope != null && !movieId.isNullOrEmpty()) {
-                                with(sharedTransitionScope) {
-                                    m.sharedBounds(
-                                        sharedContentState = rememberSharedContentState(key = "poster_$movieId"),
-                                        animatedVisibilityScope = animatedVisibilityScope,
-                                        resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(),
-                                        // 动画期间保持与静态态相同的圆角 (8dp)
-                                        clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(8.dp))
-                                    )
-                                }
-                            } else {
-                                m
-                            }
-                        }
-                        .clip(RoundedCornerShape(8.dp)) // 静态圆角裁剪放在最后
 
-                    AsyncImage(
-                        model = remember(posterUrl) {
-                            ImageRequest.Builder(context)
-                                .data(posterUrl)
-                                .crossfade(false)
-                                .build()
-                        },
-                        contentDescription = title,
-                        contentScale = ContentScale.Crop,
-                        modifier = imageModifier
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .align(Alignment.Center)
-                    )
-                }
+                AsyncImage(
+                    model = remember(posterUrl) {
+                        ImageRequest.Builder(context)
+                            .data(posterUrl)
+                            .crossfade(false)
+                            .build()
+                    },
+                    contentDescription = title,
+                    contentScale = ContentScale.Crop,
+                    modifier = imageModifier
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .align(Alignment.Center)
+                )
             }
 
             // 统一的精美评分角标 (绝对定位在右上角，伴随轻微前凸立体位移)

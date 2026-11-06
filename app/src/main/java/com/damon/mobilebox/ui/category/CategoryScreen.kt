@@ -3,9 +3,8 @@ package com.damon.mobilebox.ui.category
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -19,6 +18,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,10 +28,15 @@ import com.damon.mobilebox.data.tvbox.MacCmsCategory
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.StandardPosterCard
 import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
-import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.player.VideoDetailData
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+/**
+ * 影视分类聚合矩阵屏 (CategoryScreen)
+ * - 核心重构：分类数据全面接入 TvBoxRepository 内存两级缓存持久托管，页面出栈入栈 0ms 瞬间恢复，绝无二次刷新与闪烁
+ * - 加载体验升级：彻底抛弃简陋居中 Spinner，引入现代商业流媒体骨架屏 (Shimmer Skeleton Grid)
+ */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun CategoryScreen(
@@ -74,22 +81,21 @@ fun CategoryScreen(
         if (selectedSecondaryId != 0) selectedSecondaryId else selectedPrimaryId
     }
 
-    // 独立维护分类页根据真实采集源返回的影片列表
-    var categoryMovies by remember { mutableStateOf<List<VideoDetailData>>(emptyList()) }
-    var isCategoryLoading by remember { mutableStateOf(false) }
+    // 订阅 TvBoxRepository 全局持久托管的分类数据流 (页面切换绝对不丢状态)
+    val categoryMovies by TvBoxRepository.categoryVodList.collectAsState()
+    val isCategoryLoading by TvBoxRepository.isCategoryLoading.collectAsState()
     var isRefreshing by remember { mutableStateOf(false) }
 
-    // 当选中的站点或分类标签变化时，向 TVBox 源发起真实的分类过滤请求 (t=type_id)
+    // 当选中的站点或分类标签变化时，向 TVBox 源发起分类过滤请求 (带内存缓存穿透保护)
     LaunchedEffect(selectedSite, effectiveQueryId) {
         val site = selectedSite ?: return@LaunchedEffect
-        isCategoryLoading = true
         val catParam = if (effectiveQueryId == 0) null else effectiveQueryId.toString()
-        val result = TvBoxRepository.fetchCategoryVodList(site, categoryId = catParam, page = 1)
-        isCategoryLoading = false
-        if (result.isSuccess) {
-            categoryMovies = result.getOrNull() ?: emptyList()
-        } else {
-            onShowToast("获取分类内容失败: ${result.exceptionOrNull()?.message}")
+        val result = TvBoxRepository.loadCategoryVods(site, categoryId = catParam, forceRefresh = false)
+        if (result.isFailure) {
+            val ex = result.exceptionOrNull()
+            if (ex !is CancellationException && ex?.message?.contains("coroutine scope", ignoreCase = true) != true) {
+                onShowToast("获取分类内容失败: ${ex?.message}")
+            }
         }
     }
 
@@ -126,17 +132,24 @@ fun CategoryScreen(
                             selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                             selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ),
-                        shape = RoundedCornerShape(50),
-                        border = null
+                        border = FilterChipDefaults.filterChipBorder(
+                            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            selectedBorderColor = MaterialTheme.colorScheme.primary,
+                            borderWidth = 1.dp,
+                            selectedBorderWidth = 1.dp,
+                            enabled = true,
+                            selected = isSelected
+                        ),
+                        shape = RoundedCornerShape(20.dp)
                     )
                 }
             }
         }
 
         // ==========================================
-        // 第二排：真实二级分类子标签横向流 (与一级分类严格联动)
+        // 第二排：真实二级子分类标签横向流
         // ==========================================
-        if (secondaryCategories.isNotEmpty()) {
+        if (secondaryCategories.size > 1) {
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -145,75 +158,68 @@ fun CategoryScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(secondaryCategories) { subCategory ->
-                    val isSelected = selectedSecondaryId == subCategory.typeId
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { selectedSecondaryId = subCategory.typeId },
+                    val isSubSelected = selectedSecondaryId == subCategory.typeId
+                    AssistChip(
+                        onClick = {
+                            selectedSecondaryId = subCategory.typeId
+                        },
                         label = {
                             Text(
                                 text = subCategory.typeName,
-                                fontSize = 13.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                fontSize = 12.sp,
+                                fontWeight = if (isSubSelected) FontWeight.Bold else FontWeight.Normal
                             )
                         },
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (isSubSelected) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            },
+                            labelColor = if (isSubSelected) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         ),
-                        shape = RoundedCornerShape(8.dp),
-                        border = if (!isSelected) FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = false,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant
-                        ) else null
+                        border = null,
+                        shape = RoundedCornerShape(12.dp)
                     )
                 }
             }
         }
 
         // ==========================================
-        // 核心内容区：真实分类结果展示与物理阻尼刷新
+        // 下方：分类影片双列瀑布流 (带下拉刷新与骨架屏)
         // ==========================================
         StandardPullToRefreshBox(
-            isRefreshing = isRefreshing || (isCategoryLoading && categoryMovies.isEmpty()),
+            isRefreshing = isRefreshing,
             onRefresh = {
                 val site = selectedSite
                 if (site == null) {
-                    onShowToast("未配置订阅源，请先添加订阅")
+                    onShowToast("未激活任何采集源站点")
                     return@StandardPullToRefreshBox
                 }
                 coroutineScope.launch {
                     isRefreshing = true
                     val catParam = if (effectiveQueryId == 0) null else effectiveQueryId.toString()
-                    val result = TvBoxRepository.fetchCategoryVodList(site, categoryId = catParam, page = 1)
+                    val result = TvBoxRepository.loadCategoryVods(site, categoryId = catParam, forceRefresh = true)
                     isRefreshing = false
                     if (result.isSuccess) {
-                        categoryMovies = result.getOrNull() ?: emptyList()
                         onShowToast("已为您刷新最新分类结果")
                     } else {
-                        onShowToast("刷新失败: ${result.exceptionOrNull()?.message}")
+                        val ex = result.exceptionOrNull()
+                        if (ex !is CancellationException && ex?.message?.contains("coroutine scope", ignoreCase = true) != true) {
+                            onShowToast("刷新失败: ${ex?.message}")
+                        }
                     }
                 }
             },
             modifier = Modifier.fillMaxSize()
         ) {
             if (isCategoryLoading && categoryMovies.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(40.dp)
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Text(
-                            text = "正在拉取采集源分类数据...",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                // 现代化骨架屏脉冲扫光替代传统菊花转圈
+                CategorySkeletonGrid()
             } else if (categoryMovies.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -242,7 +248,7 @@ fun CategoryScreen(
                         Text(
                             text = if (selectedSite == null) "请前往首页添加 TVBox 订阅链接" else "可尝试切换至其他分类或下拉刷新",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp
+                            fontSize = 13.sp
                         )
                     }
                 }
@@ -252,7 +258,7 @@ fun CategoryScreen(
                     contentPadding = PaddingValues(
                         start = 16.dp,
                         end = 16.dp,
-                        top = 16.dp,
+                        top = 4.dp,
                         bottom = 96.dp
                     ),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -271,19 +277,78 @@ fun CategoryScreen(
                             movieId = movie.id,
                             sharedTransitionScope = sharedTransitionScope,
                             animatedVisibilityScope = animatedVisibilityScope,
-                            modifier = animateItem(
-                                fadeInSpec = tween(durationMillis = 400),
-                                placementSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessLow
-                                )
-                            ),
+                            modifier = Modifier,
                             onClick = {
                                 onMovieClick(movie)
                             }
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 现代化商业流媒体骨架屏 (Shimmer Skeleton Grid)
+ * 提前勾勒出 2 列圆角海报轮廓，配合柔和扫光动画，消除等待焦虑感
+ */
+@Composable
+fun CategorySkeletonGrid() {
+    val transition = rememberInfiniteTransition(label = "category_shimmer")
+    val translateAnim by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1200f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer_anim"
+    )
+
+    val shimmerBrush = Brush.linearGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ),
+        start = Offset(translateAnim - 250f, translateAnim - 250f),
+        end = Offset(translateAnim + 250f, translateAnim + 250f)
+    )
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.fillMaxSize(),
+        userScrollEnabled = false
+    ) {
+        items(6) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(0.7f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(shimmerBrush)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.75f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(shimmerBrush)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.45f)
+                        .height(11.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(shimmerBrush)
+                )
             }
         }
     }
