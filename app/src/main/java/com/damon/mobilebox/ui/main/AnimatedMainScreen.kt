@@ -5,14 +5,17 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -58,6 +61,8 @@ import com.damon.mobilebox.ui.theme.ThemePreference
 import com.damon.mobilebox.ui.theme.ThemeColorMode
 import com.damon.mobilebox.ui.theme.AppThemeState
 import com.damon.mobilebox.ui.components.StandardPosterCard
+import com.damon.mobilebox.ui.components.NavGlyph
+import com.damon.mobilebox.ui.components.NavGlyphIcon
 import com.damon.mobilebox.ui.components.ModernToastMessage
 import com.damon.mobilebox.ui.components.CupertinoSwitch
 import com.damon.mobilebox.ui.components.ColorPickerDialog
@@ -166,7 +171,12 @@ fun AnimatedMainScreen(
                                     selectedIndex = pagerState.currentPage,
                                     onTabSelected = { index ->
                                         coroutineScope.launch {
-                                            pagerState.animateScrollToPage(index)
+                                            // 直接定帧跳转，禁止水平滚动动画。
+                                            // animateScrollToPage 会让 Pager 物理滚过中间所有页面：
+                                            // 跨 Tab 点击时会串场闪过无关页面、两页同时露出一条竖向接缝，
+                                            // 且 currentPage 沿途逐格变化导致底部胶囊“跑马灯”式跳变。
+                                            // 本 Pager 已关闭用户滑动，底部导航语义下应为瞬时切换。
+                                            pagerState.scrollToPage(index)
                                         }
                                     }
                                 )
@@ -186,7 +196,7 @@ fun AnimatedMainScreen(
                                         OptimizedTopBar(
                                             sourceName = selectedSite?.name ?: "点击配置订阅",
                                             onSearchClick = {
-                                                coroutineScope.launch { pagerState.animateScrollToPage(1) }
+                                                coroutineScope.launch { pagerState.scrollToPage(1) }
                                             },
                                             onSourceClick = { showSourceDialog = true }
                                         )
@@ -721,17 +731,18 @@ fun LiveScreenContent(
                             }
 
                             // 右侧渐变消隐遮罩 (Fading Edge)：明确暗示右侧可继续水平滑动
+                            // 32dp 单段透明→背景在 #F2F2F7 浅色底上几乎不可见，故加宽至 52dp
+                            // 并加入中间锚点，形成“半透→实底”的双段收口，滑动边缘提示更明确
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.CenterEnd)
-                                    .width(32.dp)
+                                    .width(52.dp)
                                     .fillMaxHeight()
                                     .background(
                                         Brush.horizontalGradient(
-                                            listOf(
-                                                Color.Transparent,
-                                                MaterialTheme.colorScheme.background
-                                            )
+                                            0f to Color.Transparent,
+                                            0.45f to MaterialTheme.colorScheme.background.copy(alpha = 0.75f),
+                                            1f to MaterialTheme.colorScheme.background
                                         )
                                     )
                             )
@@ -1198,13 +1209,16 @@ fun ModernSettingsScreen(
 
 @Composable
 fun SettingSectionHeader(title: String) {
-    Spacer(modifier = Modifier.height(6.dp))
+    // 分组标题此前为 14.sp，反而小于列表项标题的 15.sp，层级是倒挂的，
+    // 因此提升到 16.sp Bold 并使用最高对比度的 onSurface，拉开区块层级。
+    Spacer(modifier = Modifier.height(10.dp))
     Text(
         text = title,
         color = MaterialTheme.colorScheme.onSurface,
-        fontSize = 14.sp,
+        fontSize = 16.sp,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+        letterSpacing = 0.2.sp,
+        modifier = Modifier.padding(start = 4.dp, bottom = 10.dp)
     )
 }
 
@@ -1382,60 +1396,97 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 }
 
 // -------------------------------------------------------------------------------------
-// 6. 底部导航栏 (沉底铺满 + 固定尺寸 Box 强制统一光标尺寸与样式)
+// 6. 底部导航栏 (沉底铺满 + 无选中背景框，选中态仅由图标空心→实心表达)
 // -------------------------------------------------------------------------------------
 @Composable
 fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit) {
-    // 强制沉底铺满，统一规范高亮胶囊与 Outlined/Filled 图标对比
-    NavigationBar(
-        modifier = Modifier.fillMaxWidth(),
-        containerColor = MaterialTheme.colorScheme.background,
-        contentColor = MaterialTheme.colorScheme.primary,
-        tonalElevation = 0.dp
+    val tabs = remember {
+        listOf(
+            "首页" to NavGlyph.Home,
+            "分类" to NavGlyph.Category,
+            "直播" to NavGlyph.Live,
+            "设置" to NavGlyph.Settings,
+            "我的" to NavGlyph.Profile
+        )
+    }
+    val primary = MaterialTheme.colorScheme.primary
+    val idleTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+    // 选中态不再绘制任何胶囊/描边背景：视觉变化只落在图标本身（空心 → 实心）
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        val tabs = listOf(
-            Triple("首页", Icons.Outlined.Home, Icons.Filled.Home),
-            Triple("分类", Icons.Outlined.GridView, Icons.Filled.GridView),
-            Triple("直播", Icons.Outlined.LiveTv, Icons.Filled.LiveTv),
-            Triple("设置", Icons.Outlined.Settings, Icons.Filled.Settings),
-            Triple("我的", Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle)
+        // 顶部分割细线：让导航栏与内容区在浅色底上有明确边界
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
         )
 
-        tabs.forEachIndexed { index, tab ->
-            val isSelected = selectedIndex == index
-            NavigationBarItem(
-                icon = {
-                    // 增大指示器内边距与横向包络宽度 (56.dp x 30.dp)，提供舒适呼吸感
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(64.dp)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEachIndexed { index, tab ->
+                val isSelected = selectedIndex == index
+
+                // 图标与文字颜色：选中态使用主题色并在 240ms 内平滑过渡
+                val glyphTint by animateColorAsState(
+                    targetValue = if (isSelected) primary else idleTint,
+                    animationSpec = tween(240),
+                    label = "navGlyphTint"
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onTabSelected(index) },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // 固定 56 x 30 占位保证五个 Tab 图标光学等大；不绘制任何背景框
                     Box(
                         modifier = Modifier
                             .width(56.dp)
                             .height(30.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (isSelected) tab.third else tab.second,
-                            contentDescription = tab.first,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        // 线框态 → 实心态交叉淡入，强化“当前所在页”的视觉锚点
+                        Crossfade(
+                            targetState = isSelected,
+                            animationSpec = tween(180),
+                            label = "navGlyphState"
+                        ) { filled ->
+                            NavGlyphIcon(
+                                type = tab.second,
+                                filled = filled,
+                                tint = glyphTint,
+                                // 实心电视机的播放三角挖空色 = 导航栏底色
+                                knockout = MaterialTheme.colorScheme.background,
+                                strokeWidth = 1.8.dp
+                            )
+                        }
                     }
-                },
-                label = {
+
+                    Spacer(modifier = Modifier.height(3.dp))
+
                     Text(
                         text = tab.first,
+                        color = glyphTint,
                         fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        letterSpacing = 0.2.sp
                     )
-                },
-                selected = isSelected,
-                onClick = { onTabSelected(index) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                )
-            )
+                }
+            }
         }
     }
 }

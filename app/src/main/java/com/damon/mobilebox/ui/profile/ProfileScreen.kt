@@ -385,6 +385,37 @@ fun StatBarChart(
 // ==========================================
 // 6. 下方功能模块区
 // ==========================================
+/**
+ * 空状态行动号召胶囊 (CTA)
+ * 大面积空卡片里只放一句灰色说明会显得空洞、且没有出路；
+ * 用一枚主题色浅底胶囊把“下一步该做什么”显性化。
+ */
+@Composable
+private fun EmptyStateCta(label: String) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
+        ) {
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun HistorySection(onShowToast: (String) -> Unit = {}) {
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
@@ -422,10 +453,14 @@ fun HistorySection(onShowToast: (String) -> Unit = {}) {
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Text(
-                    text = "暂无未播完的记录，快去发现精彩影片吧",
+                    text = "暂无未播完的记录",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
                 )
+                // 空状态行动号召：把原本纯说明性的灰字收敛为一枚明确的 CTA 胶囊
+                EmptyStateCta(label = "去发现")
             }
         }
     }
@@ -480,10 +515,13 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Text(
-                    text = "暂无待看影片，在详情页点击追剧即可收录",
+                    text = "暂无待看影片",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
                 )
+                EmptyStateCta(label = "去追剧")
             }
         }
         
@@ -495,7 +533,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                 onClick = { onShowToast("打开我的收藏 (14部)") },
                 modifier = Modifier
                     .weight(1f)
-                    .height(80.dp),
+                    .height(72.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
@@ -507,7 +545,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("14", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("14", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("我的收藏", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -516,7 +554,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                 onClick = { onShowToast("正在追更在看 (3部)") },
                 modifier = Modifier
                     .weight(1f)
-                    .height(80.dp),
+                    .height(72.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
@@ -528,7 +566,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("3", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("3", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("在看剧集", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

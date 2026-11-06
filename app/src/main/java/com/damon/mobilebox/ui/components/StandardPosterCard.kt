@@ -7,6 +7,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,6 +38,26 @@ import coil.request.ImageRequest
  * 严格控制 Modifier 链顺序：sharedBounds 位于 clip 之前，使用 8dp 圆角
  * 禁用 Coil crossfade 杜绝动画闪烁，结合硬件传感器 3D 视差
  */
+/**
+ * 海报入场淡入闸门
+ * Pager 的离屏页面会被销毁，切回首页/分类时卡片会重新组合。
+ * 若每张卡片每次挂载都从 alpha=0 播放 350ms 淡入，就会在每次切 Tab 时出现整屏“闪一下”。
+ * 这里把入场动画限定为进程启动后的首批海报（700ms 窗口），之后挂载的卡片直接以 alpha=1 呈现。
+ */
+private object PosterEntranceGate {
+    private val firstMountMs = java.util.concurrent.atomic.AtomicLong(0L)
+
+    fun shouldAnimate(): Boolean {
+        val now = System.currentTimeMillis()
+        val first = firstMountMs.get()
+        if (first == 0L) {
+            firstMountMs.compareAndSet(0L, now)
+            return true
+        }
+        return now - first < 700L
+    }
+}
+
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun StandardPosterCard(
@@ -50,7 +71,8 @@ fun StandardPosterCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {}
 ) {
-    var isMounted by remember { mutableStateOf(false) }
+    // 仅首批海报播放入场淡入；切 Tab 重新组合的卡片直接完整显示，避免整屏闪烁
+    var isMounted by remember { mutableStateOf(!PosterEntranceGate.shouldAnimate()) }
     LaunchedEffect(Unit) {
         isMounted = true
     }
@@ -63,6 +85,9 @@ fun StandardPosterCard(
     val parallax = LocalParallaxAngles.current
     val isParallaxEnabled = LocalParallaxEnabled.current
     val context = LocalContext.current
+
+    // 仅当评分为有效正数时才渲染角标 (0.0 / 空值视为无评分)
+    val hasScore = remember(score) { (score.toFloatOrNull() ?: 0f) > 0f }
 
     Column(
         modifier = modifier
@@ -123,7 +148,9 @@ fun StandardPosterCard(
             }
 
             // 统一的精美评分角标 (绝对定位在右上角，伴随轻微前凸立体位移)
-            if (score.isNotEmpty()) {
+            // 深色海报上纯黑底板会与背景融为一体，因此追加 0.5dp 半透明白描边保证边界可辨；
+            // 同时过滤 0.0 / 无效评分，避免无意义的空角标污染画面。
+            if (hasScore) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -135,7 +162,8 @@ fun StandardPosterCard(
                             }
                         }
                         .clip(RoundedCornerShape(6.dp))
-                        .background(Color.Black.copy(alpha = 0.75f))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .border(0.5.dp, Color.White.copy(alpha = 0.38f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
@@ -172,25 +200,33 @@ fun StandardPosterCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // 标题排版 (强制单行截断，防止网格高度被破坏)
+        // 标题排版：单行截断 + 固定行高容器
+        // 说明：仅靠 maxLines=1 仍会受到字体回退、Emoji、西文混排的行高差异影响，
+        // 这里把文本块高度固定下来，保证同一行网格内的卡片高度像素级一致。
         Text(
             text = title,
             color = MaterialTheme.colorScheme.onSurface,
             fontSize = 14.sp,
+            lineHeight = 19.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(19.dp)
         )
         Spacer(modifier = Modifier.height(3.dp))
-        // 副标题排版 (严格单行，长文本自动省略)
+        // 副标题排版：严格单行 + 固定高度，长字段一律省略号收口
         Text(
             text = subtitle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
+            lineHeight = 16.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(16.dp)
         )
     }
 }
