@@ -1,32 +1,32 @@
 # MobileBox 📱
 
 <p align="center">
-  <strong>简体中文</strong> | <a href="README_EN.md">English</a>
+  <strong>English</strong> | <a href="README_ZH.md">简体中文</a>
 </p>
 
-> 一款基于现代 Android 架构打造的高性能流媒体移动客户端。遵循 **Clean Architecture (整洁架构)** 规范，采用 **Jetpack Compose** 与 **Material Design 3** 构建。
+> A modern, high-performance Android streaming media client. Built from scratch following **Clean Architecture**, powered by **Jetpack Compose** and **Material Design 3**.
 
 ---
 
-## ✨ 核心特性
+## ✨ Features
 
-- **现代响应式 UI**：基于 Jetpack Compose 与 Material Design 3，支持深浅双色主题、纯硬件加速极光渐变背景与动态主题色切换。
-- **单手移动交互体验**：底部四栏平滑导航、分类防误触双层过滤、物理阻尼下拉推移与回弹动效。
-- **全黄金比例海报**：统一 2:3 标准竖版海报规范，集成硬件陀螺仪驱动的 3D 景深悬浮透视与折射流光反射。
-- **多数据源直连秒播**：重客户端直连架构，支持动态订阅源切换与纯文本规则解析。
-- **现代化构建与依赖注入**：全面采用 Kotlin DSL、Gradle Version Catalog (`libs.versions.toml`) 与 Hilt 依赖注入。
-
----
-
-## 🏗️ 架构概览
-
-- **UI 呈现层 (Presentation)**：Jetpack Compose, Material 3, Navigation, Coil
-- **业务逻辑层 (Domain)**：Kotlin Coroutines & Flow, UseCases, Clean Architecture
-- **数据管理层 (Data)**：DataStore Preferences, Hilt DI, Retrofit / OkHttp
-- **多媒体内核 (Player)**：移动端全手势触控内核抽象与双核解码支持
+- **Modern Responsive UI**: Built with Jetpack Compose & Material 3, supporting dynamic palettes, hardware-accelerated aurora glow backgrounds, and instant theme color switching.
+- **Single-Handed Mobile Interaction**: Seamless 4-tab bottom navigation, anti-misfire double-tier category filters, and physical displacement pull-to-refresh with spring rebound.
+- **Standard 2:3 Golden Ratio Posters**: Unified vertical poster layout integrated with hardware gyroscope-driven 3D parallax tilt, depth translation, and dynamic specular sheen reflections.
+- **Direct-Play Multi-Source Engine**: Fat-client direct sniffing architecture with dynamic multi-source subscription switching and pure-text rule parsing.
+- **Modern Build & Dependency Injection**: Pure Kotlin DSL, Gradle Version Catalog (`libs.versions.toml`), and modular Hilt DI architecture.
 
 ---
 
-## 📄 开源声明
+## 🏗️ Architecture Overview
 
-本项目基于开源精神打造，仅供个人技术研究与移动端架构演进交流学习使用。
+- **Presentation Layer**: Jetpack Compose, Material Design 3, Navigation, Coil
+- **Domain Layer**: Kotlin Coroutines & Flow, Use Cases, Clean Architecture
+- **Data Layer**: Jetpack DataStore Preferences, Hilt DI, Retrofit / OkHttp
+- **Media Engine**: Touch-gesture-driven mobile player core with dual-kernel decoding support
+
+---
+
+## 📄 License & Disclaimer
+
+This project is created under the spirit of open-source, intended strictly for personal research and mobile software architecture study.
