@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
@@ -55,7 +56,7 @@ fun NavGlyphIcon(
             NavGlyph.Home -> drawHomeGlyph(tint, filled, stroke)
             NavGlyph.Category -> drawCategoryGlyph(tint, filled, stroke)
             NavGlyph.Live -> drawLiveGlyph(tint, filled, knockout, stroke)
-            NavGlyph.Settings -> drawSettingsGlyph(tint, filled, stroke)
+            NavGlyph.Settings -> drawSettingsGlyph(tint, filled, knockout, stroke)
             NavGlyph.Profile -> drawProfileGlyph(tint, filled, stroke)
         }
     }
@@ -174,34 +175,52 @@ private fun DrawScope.drawLiveGlyph(tint: Color, filled: Boolean, knockout: Colo
 }
 
 // ---------------------------------------------------------------------------
-// 设置：三轨推子 (Tune)
-// 说明：24dp 尺寸下齿轮的齿长 / 中心孔 / 外环互相挤压，会糊成一团噪点；
-// 改用与全局同线宽的“滑杆”语义图标，小尺寸下轮廓干净、辨识度更高。
-// 滑钮使用同色实心圆覆盖轨道，不需要挖空，因此在任何底色上都成立。
+// 设置：6 齿粗齿轮
+// 空心/实心齿轮是天然的「轮廓 vs 整块面积」对比，选中态比三轨推子直观得多，
+// 也贴合「设置=齿轮」的用户心智。之前齿轮在 24dp 下糊成一团是因为用了 8 细齿 + 小中心孔，
+// 这里改成 6 个粗齿 + 大中心孔，小尺寸下依然干净。
 // ---------------------------------------------------------------------------
-private fun DrawScope.drawSettingsGlyph(tint: Color, filled: Boolean, stroke: Float) {
-    val laneStroke = if (filled) stroke * 1.15f else stroke
-    val knobRadius = if (filled) 2.35f else 2.05f
-    val lanes = listOf(
-        6.9f to 9.1f,
-        12.0f to 15.3f,
-        17.1f to 8.1f
-    )
-    lanes.forEach { (rawY, rawKnobX) ->
-        val y = px(rawY)
-        drawLine(
-            color = tint,
-            start = Offset(px(3.2f), y),
-            end = Offset(px(20.8f), y),
-            strokeWidth = laneStroke,
-            cap = StrokeCap.Round
-        )
-        drawCircle(
-            color = tint,
-            radius = px(knobRadius),
-            center = Offset(px(rawKnobX), y),
-            style = Fill
-        )
+private fun DrawScope.drawSettingsGlyph(tint: Color, filled: Boolean, knockout: Color, stroke: Float) {
+    val center = pt(12f, 12f)
+    val toothW = px(4.8f)
+    val toothH = px(3.6f)
+    val toothTopLeft = Offset(px(12f) - toothW / 2f, px(1.4f))
+    val toothCorner = CornerRadius(px(1.1f), px(1.1f))
+    val bodyRadius = px(8.2f)
+    val holeRadius = px(3.3f)
+    val toothStyle = if (filled) Fill else Stroke(stroke)
+
+    // 1) 齿轮主体圆
+    drawCircle(tint, radius = bodyRadius, center = center, style = if (filled) Fill else Stroke(stroke))
+
+    // 2) 六个粗齿绕中心旋转复制。空心态先用底色盖住主体圆穿过齿的线，
+    //    让齿压在圆上，才是干净的齿轮轮廓。
+    for (i in 0 until 6) {
+        withTransform({ rotate(i * 60f, pivot = center) }) {
+            if (!filled) {
+                drawRoundRect(
+                    color = knockout,
+                    topLeft = toothTopLeft,
+                    size = Size(toothW, toothH),
+                    cornerRadius = toothCorner,
+                    style = Fill
+                )
+            }
+            drawRoundRect(
+                color = tint,
+                topLeft = toothTopLeft,
+                size = Size(toothW, toothH),
+                cornerRadius = toothCorner,
+                style = toothStyle
+            )
+        }
+    }
+
+    // 3) 中心：实心态挖空成大孔，空心态描成细圆环
+    if (filled) {
+        drawCircle(knockout, radius = holeRadius, center = center, style = Fill)
+    } else {
+        drawCircle(tint, radius = holeRadius, center = center, style = Stroke(stroke))
     }
 }
 

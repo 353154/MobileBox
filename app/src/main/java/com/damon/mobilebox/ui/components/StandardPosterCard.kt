@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -82,8 +83,9 @@ fun StandardPosterCard(
         label = "posterAlpha"
     )
 
-    val parallax = LocalParallaxAngles.current
+    val parallaxState = LocalParallaxAngles.current
     val isParallaxEnabled = LocalParallaxEnabled.current
+    val density = LocalDensity.current.density
     val context = LocalContext.current
 
     // 仅当评分为有效正数时才渲染角标 (0.0 / 空值视为无评分)
@@ -93,7 +95,8 @@ fun StandardPosterCard(
         modifier = modifier
             .graphicsLayer { alpha = alphaAnim }
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            // 这里不裁剪：Column 的 clip 会连带裁掉海报 3D 旋转后超出卡片宽度的近边，
+            // 让透视形变退化成中心缩放。圆角由海报 Box 自身的 clip 保证。
             .clickable { onClick() }
     ) {
         // 海报图片容器：强制统一 aspectRatio(0.7f)，平滑过渡
@@ -101,6 +104,22 @@ fun StandardPosterCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(0.7f)
+                // 3D 陀螺仪视差：放在 clip 外层，让「已裁剪成圆角的整张卡片」一起做透视变换。
+                // 旧实现把旋转放在图片内层，四角被父 Box 裁掉后只剩中心轻微缩放，
+                // 不产生边缘透视形变，肉眼几乎看不出倾斜。
+                // 角度取自相对握持基线的 State，绘制阶段读取，不触发全树重组。
+                .graphicsLayer {
+                    if (isParallaxEnabled) {
+                        val p = parallaxState.value
+                        rotationY = p.roll * 14f
+                        rotationX = -p.pitch * 14f
+                        cameraDistance = 14f * density
+                        translationX = p.roll * 5f * density
+                        translationY = -p.pitch * 5f * density
+                        scaleX = 1.04f
+                        scaleY = 1.04f
+                    }
+                }
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
@@ -124,7 +143,6 @@ fun StandardPosterCard(
                             m
                         }
                     }
-
                 AsyncImage(
                     model = remember(posterUrl) {
                         ImageRequest.Builder(context)
@@ -148,8 +166,8 @@ fun StandardPosterCard(
             }
 
             // 统一的精美评分角标 (绝对定位在右上角，伴随轻微前凸立体位移)
-            // 深色海报上纯黑底板会与背景融为一体，因此追加 0.5dp 半透明白描边保证边界可辨；
-            // 同时过滤 0.0 / 无效评分，避免无意义的空角标污染画面。
+            // 纯黑底板在深色海报上会融进背景，改用高不透明度的浅底 + 深色文字与深色细描边，
+            // 明暗两类海报上都能保持边界；同时过滤 0.0 / 无效评分。
             if (hasScore) {
                 Box(
                     modifier = Modifier
@@ -157,18 +175,19 @@ fun StandardPosterCard(
                         .padding(6.dp)
                         .graphicsLayer {
                             if (isParallaxEnabled) {
-                                translationX = parallax.roll * 6.dp.toPx()
-                                translationY = parallax.pitch * 6.dp.toPx()
+                                val p = parallaxState.value
+                                translationX = p.roll * 6.dp.toPx()
+                                translationY = p.pitch * 6.dp.toPx()
                             }
                         }
                         .clip(RoundedCornerShape(6.dp))
-                        .background(Color.Black.copy(alpha = 0.62f))
-                        .border(0.5.dp, Color.White.copy(alpha = 0.38f), RoundedCornerShape(6.dp))
+                        .background(Color.White.copy(alpha = 0.92f))
+                        .border(0.5.dp, Color.Black.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = score,
-                        color = Color.White,
+                        color = Color(0xFF15181F),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -181,8 +200,9 @@ fun StandardPosterCard(
                     modifier = Modifier
                         .fillMaxSize()
                         .drawBehind {
-                            val highlightX = size.width * (0.5f - parallax.roll * 0.6f)
-                            val highlightY = size.height * (0.5f - parallax.pitch * 0.6f)
+                            val p = parallaxState.value
+                            val highlightX = size.width * (0.5f - p.roll * 0.6f)
+                            val highlightY = size.height * (0.5f - p.pitch * 0.6f)
                             drawRect(
                                 brush = Brush.radialGradient(
                                     colors = listOf(

@@ -4,12 +4,16 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -19,6 +23,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -46,14 +51,15 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import com.damon.mobilebox.ui.player.findActivity
 import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.damon.mobilebox.ui.theme.ThemeManager
@@ -72,6 +78,11 @@ import com.damon.mobilebox.ui.components.LocalParallaxAngles
 import com.damon.mobilebox.ui.components.LocalParallaxEnabled
 import com.damon.mobilebox.ui.components.rememberParallaxAngles
 import com.damon.mobilebox.ui.components.animateItem
+import com.damon.mobilebox.ui.components.horizontalScrollFadingEdge
+import com.damon.mobilebox.ui.components.LiveStreamPreview
+import com.damon.mobilebox.ui.components.BingWallpaperBackdrop
+import com.damon.mobilebox.ui.components.BingWallpaperStore
+import com.damon.mobilebox.ui.components.GlassControlButton
 import com.damon.mobilebox.ui.category.CategoryScreen
 import com.damon.mobilebox.ui.profile.ProfileScreen
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
@@ -80,6 +91,7 @@ import com.damon.mobilebox.ui.player.VideoDetailData
 import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.components.TvBoxSubscriptionDialog
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
+import com.damon.mobilebox.data.tvbox.EpgPrograms
 import com.damon.mobilebox.data.tvbox.TvBoxSite
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import androidx.activity.compose.BackHandler
@@ -112,6 +124,8 @@ fun AnimatedMainScreen(
 
     LaunchedEffect(Unit) {
         TvBoxRepository.initFromCache(context)
+        // 客户端启动即后台拉取 Bing 壁纸并更新本地缓存（只有成功才替换）
+        BingWallpaperStore.prefetch(context)
     }
 
     LaunchedEffect(toastMessage) {
@@ -340,8 +354,11 @@ fun HomeGridContent(
     var isRefreshing by remember { mutableStateOf(false) }
 
     StandardPullToRefreshBox(
-        isRefreshing = isRefreshing || (isRepoLoading && realVodList.isEmpty()),
+        // 仓库首屏加载由内容区自己的「正在加载片库」态呈现，不映射成下拉刷新态，
+        // 否则容器指示器会与页面中央的加载圈同时出现（双进度圈）。
+        isRefreshing = isRefreshing,
         onRefresh = {
+            if (isRepoLoading) return@StandardPullToRefreshBox
             if (selectedSite == null) {
                 onConfigureSubscription()
                 return@StandardPullToRefreshBox
@@ -493,8 +510,24 @@ fun LiveScreenContent(
     // 选中的分类：-1 为“全部”，>=0 为 liveGroups 中的具体索引
     var selectedGroupIndex by remember { mutableIntStateOf(-1) }
 
-    // 是否开启播放（默认进来不播放，点击大播放按钮或点选台后才开始播放）
+    // 是否开启播放：唯一入口是中间的大播放按钮，选台不会触发播放
     var isPlayerActive by remember { mutableStateOf(false) }
+
+    val epgPrograms by TvBoxRepository.epgPrograms.collectAsState()
+    // 模板就绪是异步的：作为查询触发条件之一，避免 initFromCache 完成前组合导致的漏查
+    val epgTemplate by TvBoxRepository.epgTemplate.collectAsState()
+    // 节目按时间推进，每分钟重算一次「正在播 / 稍后」，无需重新拉取 EPG
+    var nowTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            nowTick = System.currentTimeMillis()
+        }
+    }
+    // 顶部当前选中的频道也触发一次节目单查询（列表可能尚未滚到它）
+    LaunchedEffect(selectedChannel?.name, epgTemplate) {
+        selectedChannel?.let { TvBoxRepository.ensureChannelEpg(it) }
+    }
 
     // 所有可用分类（服务端拉取的数据源联动）
     val categoryList = remember(liveGroups, liveChannels) {
@@ -588,10 +621,20 @@ fun LiveScreenContent(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                             .aspectRatio(16f / 9f)
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF0F0F0F))
                     }
                 ) {
+                    // 静音模糊实时预览：进入页面 / 换台即预拉当前频道。
+                    // 声明在正式播放器之前（下层），点击播放后正式画面立即盖上来，
+                    // 不会出现「点了按钮还被模糊层挡 400ms」的迟滞感。
+                    LiveBlurPreview(
+                        visible = !isPlayerActive,
+                        streamUrl = selectedChannel?.url,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // 上层：只有点击大播放按钮才挂载正式播放器
                     if (isPlayerActive && selectedChannel != null) {
                         MobileVideoPlayer(
                             streamUrl = selectedChannel!!.url,
@@ -611,15 +654,30 @@ fun LiveScreenContent(
                                 }
                             }
                         )
-                    } else {
+                    }
+
+                    // 预览态覆盖信息（播放态交给播放器自己的控制层）
+                    if (!isPlayerActive) {
                         Box(modifier = Modifier.fillMaxSize()) {
+                            // 毛玻璃蒙版：明显加深让预览层更「实」，再叠一层极淡主题蓝，
+                            // 避免大半径模糊把画面洗成灰白半透明
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF0B1220).copy(alpha = 0.38f))
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF1E88E5).copy(alpha = 0.08f))
+                            )
                             // 内嵌 LIVE 胶囊徽章 (内嵌于播放器内部留足 16dp 呼吸边距，杜绝切角贴片感)
                             Surface(
                                 color = Color(0xFFE50914),
                                 shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .padding(16.dp)
+                                    .padding(22.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -640,37 +698,29 @@ fun LiveScreenContent(
                                 }
                             }
 
-                            // 居中区域：大播放按钮 + 正在直播频道标题 + 节目信息
+                            // 播放按钮独立居中：与播放器控制层的暂停按钮共用同一中心点。
+                            // 旧实现把按钮和文字放在同一个居中 Column 里，按钮被下方文字顶偏了。
+                            GlassControlButton(
+                                onClick = {
+                                    if (selectedChannel != null) {
+                                        isPlayerActive = true
+                                    } else {
+                                        onShowToast("暂无可用电视频道")
+                                    }
+                                },
+                                icon = Icons.Default.PlayArrow,
+                                contentDescription = "播放",
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+
+                            // 标题与节目信息下移到按钮下方：用 offset 平移，不参与按钮的居中计算
                             Column(
-                                modifier = Modifier.align(Alignment.Center),
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .offset(y = 72.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF1E88E5),
-                                    modifier = Modifier
-                                        .size(58.dp)
-                                        .clickable {
-                                            if (selectedChannel != null) {
-                                                isPlayerActive = true
-                                            } else {
-                                                onShowToast("暂无可用电视频道")
-                                            }
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "播放",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(34.dp)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
                                 Text(
                                     text = "正在直播: ${selectedChannel?.name ?: "CCTV-1 综合 4K"}",
                                     color = Color.White,
@@ -680,11 +730,19 @@ fun LiveScreenContent(
 
                                 Spacer(modifier = Modifier.height(6.dp))
 
-                                Text(
-                                    text = "当前节目: ${if (selectedChannel?.name?.contains("CCTV-1") == true) "新闻联播" else "实时电视节目"} · 稍后: 焦点访谈",
-                                    color = Color(0xFF42A5F5),
-                                    fontSize = 12.sp
-                                )
+                                val headerEpg = remember(epgPrograms, selectedChannel, nowTick) {
+                                    selectedChannel?.let { EpgPrograms.lookup(epgPrograms, it, nowTick) }
+                                }
+                                if (headerEpg != null) {
+                                    Text(
+                                        text = EpgPrograms.formatHeader(headerEpg),
+                                        color = Color(0xFF42A5F5),
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(horizontal = 24.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -693,14 +751,18 @@ fun LiveScreenContent(
                 // 2. 播放框下方的电视直播分类与电视台列表 (仅在竖屏状态下展示，横屏下完全隐藏避让)
                 if (!isLandscape) {
                     if (categoryList.size > 1) {
+                        val liveCategoryState = rememberLazyListState()
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
                         ) {
                             LazyRow(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(start = 16.dp, end = 36.dp, top = 6.dp, bottom = 6.dp),
+                                state = liveCategoryState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .horizontalScrollFadingEdge(liveCategoryState, 40.dp),
+                                contentPadding = PaddingValues(start = 16.dp, end = 32.dp, top = 6.dp, bottom = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 items(categoryList.indices.toList()) { index ->
@@ -730,22 +792,6 @@ fun LiveScreenContent(
                                 }
                             }
 
-                            // 右侧渐变消隐遮罩 (Fading Edge)：明确暗示右侧可继续水平滑动
-                            // 32dp 单段透明→背景在 #F2F2F7 浅色底上几乎不可见，故加宽至 52dp
-                            // 并加入中间锚点，形成“半透→实底”的双段收口，滑动边缘提示更明确
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .width(52.dp)
-                                    .fillMaxHeight()
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            0f to Color.Transparent,
-                                            0.45f to MaterialTheme.colorScheme.background.copy(alpha = 0.75f),
-                                            1f to MaterialTheme.colorScheme.background
-                                        )
-                                    )
-                            )
                         }
                     }
 
@@ -756,13 +802,17 @@ fun LiveScreenContent(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         items(displayedChannels) { channel ->
+                            // 只查询真正可见的频道，结果由 Repository 按天缓存
+                            LaunchedEffect(channel.name, epgTemplate) {
+                                TvBoxRepository.ensureChannelEpg(channel)
+                            }
                             val isCurrent = channel.url == selectedChannel?.url
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
+                                        // 选台只切换模糊预览源，正式播放唯一入口是中间的大播放按钮
                                         selectedChannel = channel
-                                        isPlayerActive = true // 点击列表中不同电视台切换不同的台并开始播放
                                     },
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
@@ -827,12 +877,19 @@ fun LiveScreenContent(
                                             fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
                                             color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = "正在播: 实时节目 | 稍后: 精彩预告",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        val channelEpg = remember(epgPrograms, channel, nowTick) {
+                                            EpgPrograms.lookup(epgPrograms, channel, nowTick)
+                                        }
+                                        if (channelEpg != null) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = EpgPrograms.formatList(channelEpg),
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1410,7 +1467,7 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
         )
     }
     val primary = MaterialTheme.colorScheme.primary
-    val idleTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+    val idleTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f)
     // 选中态不再绘制任何胶囊/描边背景：视觉变化只落在图标本身（空心 → 实心）
 
     Column(
@@ -1471,7 +1528,7 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
                                 tint = glyphTint,
                                 // 实心电视机的播放三角挖空色 = 导航栏底色
                                 knockout = MaterialTheme.colorScheme.background,
-                                strokeWidth = 1.8.dp
+                                strokeWidth = if (filled) 1.8.dp else 2.1.dp
                             )
                         }
                     }
@@ -1491,4 +1548,52 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
     }
 }
 
+/**
+ * 直播模糊预览层（独立顶层 Composable）。
+ * 放在这里而不是 LiveScreenContent 内，是为了避开外层 ColumnScope 的隐式接收者 ——
+ * 在 BoxScope + ColumnScope 叠加的作用域里，AnimatedVisibility 会被解析成
+ * ColumnScope 的扩展版本而编译失败。
+ *
+ * 三层结构：底层 Bing 静态壁纸（本地缓存，0 延迟防黑屏）→ 中层静音模糊直播流
+ * （首帧解码后才淡入，之前 alpha 为 0，不遮挡壁纸）→ 上层文字/按钮。
+ */
+@Composable
+private fun LiveBlurPreview(
+    visible: Boolean,
+    streamUrl: String?,
+    modifier: Modifier = Modifier
+) {
+    // 换台时重置，重新等待新流首帧
+    var frameReady by remember(streamUrl) { mutableStateOf(false) }
+    val videoAlpha by animateFloatAsState(
+        targetValue = if (frameReady) 1f else 0f,
+        animationSpec = tween(320),
+        label = "livePreviewFade"
+    )
 
+    Box(modifier = modifier) {
+        BingWallpaperBackdrop(
+            active = !frameReady,
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(1f - videoAlpha)
+        )
+
+        AnimatedVisibility(
+            visible = visible && !streamUrl.isNullOrBlank(),
+            enter = fadeIn(),
+            exit = fadeOut(tween(250)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            streamUrl?.let { url ->
+                LiveStreamPreview(
+                    streamUrl = url,
+                    onFirstFrame = { frameReady = true },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(videoAlpha)
+                )
+            }
+        }
+    }
+}

@@ -66,13 +66,20 @@ data class LiveChannelGroup(
     val channels: List<LiveChannel>
 )
 
+/** 直播列表解析结果：频道分组 + 从 M3U 头发现的 EPG 地址 */
+data class LiveParseResult(
+    val groups: List<LiveChannelGroup>,
+    val epgUrls: List<String> = emptyList()
+)
+
 data class LiveChannel(
     val name: String,
     val url: String,
     val urls: List<String> = listOf(url),
     val group: String = "默认分组",
     val epg: String? = null,
-    val logo: String? = null
+    val logo: String? = null,
+    val tvgId: String? = null
 )
 
 data class TvBoxParse(

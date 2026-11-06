@@ -2,6 +2,16 @@ package com.damon.mobilebox.data.tvbox
 
 import android.net.Uri
 import android.util.Base64
+import android.util.Log
+import android.util.Xml
+import org.xmlpull.v1.XmlPullParser
+import java.io.ByteArrayInputStream
+import java.io.StringReader
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.zip.GZIPInputStream
 import com.damon.mobilebox.ui.player.VideoDetailData
 import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.player.VideoRoute
@@ -347,7 +357,7 @@ object TvBoxParser {
     /**
      * 解析并拉取直播列表 (支持 TVBox live.txt #genre# 格式及标准 M3U 播放列表)
      */
-    suspend fun fetchLiveChannels(liveUrl: String): Result<List<LiveChannelGroup>> = withContext(Dispatchers.IO) {
+    suspend fun fetchLiveChannels(liveUrl: String): Result<LiveParseResult> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url(liveUrl.trim())
@@ -361,7 +371,9 @@ object TvBoxParser {
 
             val content = response.body?.string() ?: ""
             val groups = parseLiveChannelsContent(content, liveUrl)
-            Result.success(groups)
+            // M3U 头里的 url-tvg / x-tvg-url 是标准 EPG 入口；没有就不查，UI 也不显示节目行
+            val epgUrls = extractEpgUrls(content.lines())
+            Result.success(LiveParseResult(groups, epgUrls))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -427,6 +439,7 @@ object TvBoxParser {
         var currentGroup = "默认分组"
         var currentName = ""
         var currentLogo: String? = null
+        var currentTvgId: String? = null
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -438,6 +451,9 @@ object TvBoxParser {
                 if (groupMatcher != null) {
                     currentGroup = groupMatcher.groupValues[1]
                 }
+                // 提取 tvg-id，用于与 XMLTV 的 channel id 精确匹配
+                val tvgIdMatcher = Regex("""tvg-id="([^"]+)"""").find(trimmed)
+                currentTvgId = tvgIdMatcher?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
                 // 提取 tvg-logo
                 val logoMatcher = Regex("""tvg-logo="([^"]+)"""").find(trimmed)
                 currentLogo = logoMatcher?.groupValues?.get(1)
@@ -454,9 +470,12 @@ object TvBoxParser {
                             name = currentName.ifBlank { "频道 ${list.size + 1}" },
                             url = playUrl,
                             group = currentGroup,
-                            logo = currentLogo
+                            logo = currentLogo,
+                            tvgId = currentTvgId
                         )
                     )
+                    currentTvgId = null
+                    currentLogo = null
                 }
             }
         }
@@ -464,6 +483,223 @@ object TvBoxParser {
         return groupMap.map { (group, channels) ->
             LiveChannelGroup(groupName = group, channels = channels)
         }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // EPG (XMLTV) 节目单
+    // ---------------------------------------------------------------------------------
+
+    /** 从 #EXTM3U 头提取 url-tvg / x-tvg-url，多个地址常用逗号分隔 */
+    fun extractEpgUrls(lines: List<String>): List<String> {
+        val header = lines.firstOrNull { it.trim().startsWith("#EXTM3U") } ?: return emptyList()
+        return Regex("""(?:url-tvg|x-tvg-url)="([^"]+)"""").findAll(header)
+            .flatMap { it.groupValues[1].split(',').asSequence() }
+            .map { it.trim() }
+            .filter { it.startsWith("http", ignoreCase = true) }
+            .distinct()
+            .toList()
+    }
+
+    /**
+     * 拉取并解析 XMLTV 节目单，返回「归一化 key -> 当天节目列表」。
+     * 支持 .xml / .xml.gz（按 URL 后缀或 gzip magic 判断）。
+     */
+    suspend fun fetchEpg(epgUrl: String): Result<Map<String, List<EpgSlot>>> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url(epgUrl.trim())
+                .header("User-Agent", DEFAULT_UA)
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("EPG 拉取失败: ${response.code}"))
+            }
+            val bytes = response.body?.bytes()
+                ?: return@withContext Result.failure(Exception("EPG 内容为空"))
+            if (bytes.isEmpty()) {
+                return@withContext Result.success(emptyMap())
+            }
+            val isGzip = epgUrl.contains(".gz", ignoreCase = true) ||
+                    (bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())
+            val inputStream = if (isGzip) {
+                GZIPInputStream(ByteArrayInputStream(bytes))
+            } else {
+                ByteArrayInputStream(bytes)
+            }
+            val text = inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            Result.success(parseXmlTv(text))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * TVBox 标准「按频道名 + 日期查询」EPG 模板，例如：
+     *   https://xxx/tvbox/epg?ch={name}&date={date}
+     * 返回当天 JSON：{"epg_data":[{"start":"00:15","end":"00:46","title":"..."}]}
+     * 与静态 XMLTV 不同，它必须逐频道请求，且时间只有 HH:mm，需按查询日补齐绝对毫秒。
+     */
+    suspend fun fetchChannelEpg(
+        template: String,
+        channelName: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<List<EpgSlot>> = withContext(Dispatchers.IO) {
+        try {
+            val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(java.util.Date(nowMillis))
+            val encodedName = URLEncoder.encode(channelName.trim(), "UTF-8")
+            val url = template.trim()
+                .replace("{name}", encodedName, ignoreCase = true)
+                .replace("{ch}", encodedName, ignoreCase = true)
+                .replace("{date}", day, ignoreCase = true)
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", DEFAULT_UA)
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("EPG 查询失败: ${response.code}"))
+            }
+            val body = response.body?.string()
+                ?: return@withContext Result.failure(Exception("EPG 结果为空"))
+            Result.success(parseEpgJson(body, nowMillis))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("MB-EPG", "请求异常: ${e.javaClass.simpleName} ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    private fun parseEpgJson(json: String, nowMillis: Long): List<EpgSlot> {
+        val root = runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
+            ?: return emptyList()
+        val array = root.getAsJsonArray("epg_data") ?: return emptyList()
+        val dayStart = Calendar.getInstance().apply {
+            timeInMillis = nowMillis
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val oneDay = 24L * 60L * 60L * 1000L
+        return array.mapNotNull { element ->
+            val obj = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
+            val title = runCatching { obj.get("title")?.asString }.getOrNull()?.trim()
+                ?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val start = runCatching { obj.get("start")?.asString }.getOrNull()
+                ?: return@mapNotNull null
+            val end = runCatching { obj.get("end")?.asString }.getOrNull() ?: start
+            val startMin = hhmmToMinutes(start) ?: return@mapNotNull null
+            val endMin = hhmmToMinutes(end) ?: return@mapNotNull null
+            val s = dayStart + startMin * 60_000L
+            var e = dayStart + endMin * 60_000L
+            if (e <= s) e += oneDay   // 跨零点节目
+            EpgSlot(title, s, e)
+        }.distinctBy { it.startMillis }.sortedBy { it.startMillis }
+    }
+
+    /** "00:15" / "00:15:30" -> 当天第 N 分钟 */
+    private fun hhmmToMinutes(raw: String): Long? {
+        val parts = raw.trim().split(':')
+        if (parts.size < 2) return null
+        val h = parts[0].toLongOrNull() ?: return null
+        val m = parts[1].toLongOrNull() ?: return null
+        return h * 60L + m
+    }
+
+    private val epgTimeFormats = listOf(
+        SimpleDateFormat("yyyyMMddHHmmss Z", Locale.US),
+        SimpleDateFormat("yyyyMMddHHmmss", Locale.US),
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+    )
+
+    private fun parseEpgTime(raw: String?): Long? {
+        if (raw.isNullOrBlank()) return null
+        for (format in epgTimeFormats) {
+            try {
+                val parsed = synchronized(format) { format.parse(raw.trim()) }
+                if (parsed != null) return parsed.time
+            } catch (_: Exception) {
+                // 换下一种格式
+            }
+        }
+        return null
+    }
+
+    /** 逐事件扫描，避免 nextText 造成事件游标错位 */
+    private fun parseXmlTv(xml: String): Map<String, List<EpgSlot>> {
+        val parser = Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        parser.setInput(StringReader(xml))
+
+        val idToDisplayName = mutableMapOf<String, String>()
+        val slotsById = mutableMapOf<String, MutableList<EpgSlot>>()
+
+        var inChannel = false
+        var inProgramme = false
+        var capturingDisplayName = false
+        var capturingTitle = false
+        var pendingId = ""
+        var pendingChannel = ""
+        var pendingStart = 0L
+        var pendingStop = 0L
+        var pendingTitle = ""
+
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when (parser.name.lowercase(Locale.ROOT)) {
+                    "channel" -> {
+                        inChannel = true
+                        pendingId = parser.getAttributeValue(null, "id").orEmpty()
+                    }
+                    "display-name" -> if (inChannel) capturingDisplayName = true
+                    "programme" -> {
+                        inProgramme = true
+                        pendingChannel = parser.getAttributeValue(null, "channel").orEmpty()
+                        pendingStart = parseEpgTime(parser.getAttributeValue(null, "start")) ?: 0L
+                        pendingStop = parseEpgTime(parser.getAttributeValue(null, "stop")) ?: 0L
+                        pendingTitle = ""
+                    }
+                    "title" -> if (inProgramme) capturingTitle = true
+                }
+                XmlPullParser.TEXT -> {
+                    if (capturingTitle && pendingTitle.isBlank()) {
+                        pendingTitle = parser.text.trim()
+                    }
+                    if (capturingDisplayName && pendingId.isNotBlank() && idToDisplayName[pendingId] == null) {
+                        parser.text.trim().takeIf { it.isNotBlank() }?.let { idToDisplayName[pendingId] = it }
+                    }
+                }
+                XmlPullParser.END_TAG -> when (parser.name.lowercase(Locale.ROOT)) {
+                    "title" -> capturingTitle = false
+                    "display-name" -> capturingDisplayName = false
+                    "channel" -> inChannel = false
+                    "programme" -> {
+                        if (pendingChannel.isNotBlank() && pendingStart > 0L &&
+                            pendingStop > pendingStart && pendingTitle.isNotBlank()
+                        ) {
+                            slotsById.getOrPut(pendingChannel) { mutableListOf() }
+                                .add(EpgSlot(pendingTitle, pendingStart, pendingStop))
+                        }
+                        inProgramme = false
+                    }
+                }
+            }
+            event = parser.next()
+        }
+
+        val result = mutableMapOf<String, List<EpgSlot>>()
+        for ((id, slots) in slotsById) {
+            val sorted = slots.distinctBy { it.startMillis }.sortedBy { it.startMillis }
+            result[EpgPrograms.normalize(id)] = sorted
+            idToDisplayName[id]?.let { name ->
+                result.putIfAbsent(EpgPrograms.normalize(name), sorted)
+            }
+        }
+        return result
     }
 
     /**

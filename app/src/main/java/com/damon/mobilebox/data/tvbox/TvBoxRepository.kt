@@ -1,6 +1,7 @@
 package com.damon.mobilebox.data.tvbox
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -16,6 +17,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 private val Context.tvBoxDataStore by preferencesDataStore(name = "tvbox_subscription_prefs")
 
@@ -28,6 +33,7 @@ object TvBoxRepository {
     private val KEY_CACHED_WAREHOUSES = stringPreferencesKey("tvbox_cached_warehouses_json")
     private val KEY_SELECTED_WAREHOUSE_URL = stringPreferencesKey("tvbox_selected_warehouse_url")
     private val KEY_CACHED_LIVES = stringPreferencesKey("tvbox_cached_lives_json")
+    private val KEY_CACHED_EPG_URLS = stringPreferencesKey("tvbox_cached_epg_urls_json")
     private val KEY_CACHED_RAW_LIVES = stringPreferencesKey("tvbox_cached_raw_lives_json")
 
     private val gson = Gson()
@@ -75,6 +81,28 @@ object TvBoxRepository {
 
     private val _liveChannels = MutableStateFlow<List<LiveChannel>>(emptyList())
     val liveChannels: StateFlow<List<LiveChannel>> = _liveChannels.asStateFlow()
+
+    // 归一化 key -> 当天节目表；无 EPG 地址或拉取失败时为空，UI 据此整行不显示节目信息
+    private val _epgPrograms = MutableStateFlow<Map<String, List<EpgSlot>>>(emptyMap())
+    val epgPrograms: StateFlow<Map<String, List<EpgSlot>>> = _epgPrograms.asStateFlow()
+
+    // TVBox 常见 EPG 是「按频道 + 日期查询」的模板（URL 含 {name}/{date}），
+    // 不能像静态 XMLTV 那样一次拉全量；保存模板，由 UI 按可见频道按需查询。
+    // 做成 StateFlow：initFromCache 是异步的，直播页可能先组合完。
+    // UI 以它为 LaunchedEffect 的 key，模板就绪时自动补查，避免竞态导致节目单永远为空。
+    private val _epgTemplate = MutableStateFlow<String?>(null)
+    val epgTemplate: StateFlow<String?> = _epgTemplate.asStateFlow()
+    private val epgLock = Any()
+    /** 归一化频道 key -> 已查询的 yyyyMMdd，避免同一频道当天反复请求 */
+    private val epgFetchedDay = ConcurrentHashMap<String, String>()
+
+    // 订阅源可能同时提供多个 EPG 模板（配置 lives[].epg + M3U 头 url-tvg），
+    // 且旧缓存里可能残留已失效的域名。这里保留全部候选并逐个尝试，
+    // 记住上次成功的模板优先命中，避免每个频道都先撞一次超时。
+    @Volatile
+    private var epgTemplateCandidates: List<String> = emptyList()
+    @Volatile
+    private var successfulTemplate: String? = null
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -255,12 +283,17 @@ object TvBoxRepository {
      */
     suspend fun syncLiveStreams(context: Context, lives: List<TvBoxLive>) {
         val rawGroups = mutableListOf<LiveChannelGroup>()
+        val epgUrls = mutableSetOf<String>()
         for (live in lives) {
+            // 订阅配置 lives[].epg 是 TVBox 标准 EPG 入口
+            live.epg?.takeIf { it.isNotBlank() }?.let { epgUrls.add(it.trim()) }
             val liveUrl = live.url ?: continue
             val result = TvBoxParser.fetchLiveChannels(liveUrl)
             if (result.isSuccess) {
-                val groups = result.getOrNull() ?: emptyList()
-                rawGroups.addAll(groups)
+                val parsed = result.getOrNull() ?: continue
+                rawGroups.addAll(parsed.groups)
+                // M3U 头 #EXTM3U 的 url-tvg / x-tvg-url
+                epgUrls.addAll(parsed.epgUrls)
             }
         }
         if (rawGroups.isNotEmpty()) {
@@ -272,6 +305,131 @@ object TvBoxRepository {
                     prefs[KEY_CACHED_LIVES] = gson.toJson(finalGroups)
                 }
             } catch (e: Exception) { /* ignore */ }
+        }
+        try {
+            context.tvBoxDataStore.edit { prefs ->
+                prefs[KEY_CACHED_EPG_URLS] = gson.toJson(epgUrls.toList())
+            }
+        } catch (e: Exception) { /* ignore */ }
+        // 有地址才查询；没有地址则清空，UI 直接不显示节目行
+        loadEpg(epgUrls.toList())
+    }
+
+    /** 区分两类 EPG 源：静态 XMLTV 全量拉取 / 模板按频道查询；无地址一律不发请求 */
+    private fun loadEpg(urls: List<String>) {
+        val distinct = urls.map { it.trim() }
+            .filter { it.startsWith("http", ignoreCase = true) }
+            .distinct()
+            .take(6)
+        val templates = distinct.filter {
+            it.contains("{name}", ignoreCase = true) ||
+                it.contains("{ch}", ignoreCase = true) ||
+                it.contains("{date}", ignoreCase = true)
+        }
+        val staticUrls = distinct - templates.toSet()
+
+        // 与当前订阅同域的模板优先（手机缓存里常残留旧订阅的失效域名）
+        val subHost = runCatching { URL(_savedSubscriptionUrl.value).host }.getOrNull()
+        val newCandidates = templates.sortedByDescending { t ->
+            if (!subHost.isNullOrBlank() && t.contains(subHost, ignoreCase = true)) 1 else 0
+        }
+        if (newCandidates != epgTemplateCandidates) {
+            epgTemplateCandidates = newCandidates
+            synchronized(epgLock) {
+                epgFetchedDay.clear()
+                successfulTemplate = null
+            }
+            _epgTemplate.value = newCandidates.firstOrNull()
+            Log.i("MB-EPG", "模板 ${newCandidates.size} 个，首选 ${newCandidates.firstOrNull()}")
+        }
+        val newTemplate = newCandidates.firstOrNull()
+        // 不依赖直播页是否被组合：模板就绪后直接在数据层为首屏频道预取节目单。
+        // ensureChannelEpg 内部按「频道 + 日期」去重，重复调用不会产生额外请求。
+        prefetchDefaultChannels()
+        if (newTemplate == null && staticUrls.isEmpty()) {
+            _epgPrograms.value = emptyMap()
+            return
+        }
+        if (staticUrls.isEmpty()) return   // 纯模板模式：结果由 ensureChannelEpg 按需写入
+
+        CoroutineScope(Dispatchers.IO).launch {
+            val merged = mutableMapOf<String, MutableList<EpgSlot>>()
+            // 保留按需查询已写入的频道，避免被静态源结果整体覆盖
+            _epgPrograms.value.forEach { (k, v) -> merged[k] = v.toMutableList() }
+            for (url in staticUrls) {
+                val parsed = TvBoxParser.fetchEpg(url).getOrNull() ?: continue
+                for ((key, slots) in parsed) {
+                    merged.getOrPut(key) { mutableListOf() }.addAll(slots)
+                }
+            }
+            _epgPrograms.value = merged.mapValues { (_, slots) ->
+                slots.distinctBy { it.startMillis }.sortedBy { it.startMillis }
+            }
+        }
+    }
+
+    /** 首屏可见频道预取：避免节目单查询依赖 LazyColumn / Pager 的组合时机 */
+    private fun prefetchDefaultChannels() {
+        val channels = _liveChannels.value
+            .distinctBy { EpgPrograms.normalize(it.name) }
+            .take(12)
+        if (channels.isEmpty()) return
+        CoroutineScope(Dispatchers.IO).launch {
+            channels.forEach { ensureChannelEpg(it) }
+        }
+    }
+
+    /**
+     * UI 渲染频道时调用：只有存在 EPG 模板才查询，同一频道当天只请求一次，
+     * 结果写回 epgPrograms（UI 侧 lookup 逻辑无需改动）。查不到 / 失败则留空，整行不显示。
+     * LazyColumn 只组合可见项，因此请求数约等于屏幕上的频道数，不会全量轰炸接口。
+     */
+    fun ensureChannelEpg(channel: LiveChannel) {
+        val preferred = successfulTemplate
+        val candidates = buildList {
+            preferred?.let { add(it) }
+            addAll(epgTemplateCandidates.filter { it != preferred })
+        }
+        if (candidates.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(java.util.Date(now))
+        val key = EpgPrograms.normalize(channel.name)
+        if (key.isEmpty()) return
+        synchronized(epgLock) {
+            if (epgFetchedDay[key] == day) return
+            epgFetchedDay[key] = day
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            var slots: List<EpgSlot>? = null
+            var usedTemplate: String? = null
+            for (t in candidates) {
+                val result = TvBoxParser.fetchChannelEpg(t, channel.name, now).getOrNull()
+                if (!result.isNullOrEmpty()) {
+                    slots = result
+                    usedTemplate = t
+                    break
+                }
+                Log.i("MB-EPG", "模板失败 ${channel.name} <- $t")
+            }
+            val resolved = slots
+            if (resolved.isNullOrEmpty()) {
+                // 全失败：清掉当天标记，下次进入页面仍可重试
+                synchronized(epgLock) { epgFetchedDay.remove(key) }
+                Log.i("MB-EPG", "全部模板失败 ${channel.name}")
+                return@launch
+            }
+            successfulTemplate = usedTemplate
+            Log.i("MB-EPG", "命中 ${channel.name} ${resolved.size} 档 <- $usedTemplate")
+            val candidateKeys = buildList {
+                channel.tvgId?.let { add(it) }
+                add(channel.name)
+                add(channel.name.replace(Regex("""\d+[KkPp]"""), ""))
+            }.map { EpgPrograms.normalize(it) }.filter { it.isNotEmpty() }.distinct()
+            synchronized(epgLock) {
+                val updated = _epgPrograms.value.toMutableMap()
+                candidateKeys.forEach { updated[it] = resolved }
+                _epgPrograms.value = updated
+            }
         }
     }
 
@@ -555,6 +713,31 @@ object TvBoxRepository {
                     val finalGroups = deduplicateGroups(groups)
                     _liveGroups.value = finalGroups
                     _liveChannels.value = finalGroups.flatMap { it.channels }
+                }
+            }
+
+            // 冷启动恢复：仅当缓存里存有 EPG 地址时才查询，否则保持空（不显示节目行）
+            val cachedEpgUrls: List<String> = prefs[KEY_CACHED_EPG_URLS]
+                ?.takeIf { it.isNotBlank() }
+                ?.let { raw ->
+                    runCatching {
+                        @Suppress("UNCHECKED_CAST")
+                        gson.fromJson(raw, object : TypeToken<List<String>>() {}.type) as? List<String>
+                    }.getOrNull()
+                }
+                ?: emptyList()
+            loadEpg(cachedEpgUrls + _rawLives.value.mapNotNull { it.epg })
+
+            // 冷启动异步刷新一次订阅配置里的 EPG 地址：既能补齐旧缓存缺失的字段，
+            // 也能让新配置的有效模板与缓存里残留的失效域名一起进入候选列表
+            CoroutineScope(Dispatchers.IO).launch {
+                val sub = TvBoxParser.fetchSubscription(savedUrl).getOrNull()
+                val cfg = (sub as? TvBoxSubscriptionResult.SingleConfig)?.config
+                val urls = cfg?.lives.orEmpty()
+                    .mapNotNull { it.epg?.takeIf { value -> value.isNotBlank() } }
+                if (urls.isNotEmpty()) {
+                    Log.i("MB-EPG", "订阅配置 EPG 地址: $urls")
+                    loadEpg(urls + cachedEpgUrls)
                 }
             }
 

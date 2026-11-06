@@ -7,6 +7,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import com.damon.mobilebox.data.tvbox.MacCmsCategory
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.StandardPosterCard
+import com.damon.mobilebox.ui.components.horizontalScrollFadingEdge
 import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
 import com.damon.mobilebox.ui.player.VideoDetailData
 import kotlinx.coroutines.CancellationException
@@ -104,10 +106,13 @@ fun CategoryScreen(
         // 第一排：真实一级分类标签横向流
         // ==========================================
         if (primaryCategories.size > 1) {
+            val primaryChipState = rememberLazyListState()
             LazyRow(
+                state = primaryChipState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp, bottom = 6.dp),
+                    .padding(top = 16.dp, bottom = 6.dp)
+                    .horizontalScrollFadingEdge(primaryChipState, 28.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -143,10 +148,13 @@ fun CategoryScreen(
         // 第二排：真实二级子分类标签横向流
         // ==========================================
         if (secondaryCategories.size > 1) {
+            val secondaryChipState = rememberLazyListState()
             LazyRow(
+                state = secondaryChipState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 10.dp),
+                    .padding(bottom = 10.dp)
+                    .horizontalScrollFadingEdge(secondaryChipState, 28.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {

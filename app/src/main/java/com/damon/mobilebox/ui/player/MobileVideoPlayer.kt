@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.damon.mobilebox.ui.components.GlassControlButton
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -500,23 +501,14 @@ fun MobileVideoPlayer(
                         }
                     }
 
-                    // 播放 / 暂停大按钮
-                    IconButton(
+                    // 播放 / 暂停大按钮：与预览态共用液态玻璃组件，中心点 / 尺寸 / 材质完全一致
+                    GlassControlButton(
                         onClick = {
                             if (isPlaying) exoPlayer.pause() else exoPlayer.play()
                         },
-                        modifier = Modifier
-                            .size(60.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "暂停" else "播放",
-                            tint = Color.White,
-                            modifier = Modifier.size(34.dp)
-                        )
-                    }
+                        icon = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "播放"
+                    )
 
                     if (!isLive) {
                         // 点播模式前进 10 秒
