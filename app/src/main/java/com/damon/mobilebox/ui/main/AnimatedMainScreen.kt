@@ -2,7 +2,10 @@ package com.damon.mobilebox.ui.main
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -54,13 +57,14 @@ import com.damon.mobilebox.ui.components.LocalParallaxEnabled
 import com.damon.mobilebox.ui.components.rememberParallaxAngles
 import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.category.CategoryScreen
+import com.damon.mobilebox.ui.profile.ProfileScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AnimatedMainScreen(themeManager: ThemeManager) {
-    val pagerState = rememberPagerState(pageCount = { 4 })
+    val pagerState = rememberPagerState(pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -92,40 +96,49 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
         ModernBackgroundContainer {
             Scaffold(
                 containerColor = Color.Transparent,
-            topBar = {
-                OptimizedTopBar(
-                    sourceName = currentSource.name,
-                    onSourceClick = { showSourceDialog = true },
-                    onSearchClick = {
-                        coroutineScope.launch { pagerState.animateScrollToPage(1) }
-                    }
-                )
-            },
-            bottomBar = {
-                AnimatedBottomNavigationBar(
-                    selectedIndex = pagerState.currentPage,
-                    onTabSelected = { index ->
-                        coroutineScope.launch {
-                            pagerState.animateScrollToPage(index)
+                bottomBar = {
+                    AnimatedBottomNavigationBar(
+                        selectedIndex = pagerState.currentPage,
+                        onTabSelected = { index ->
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(index)
+                            }
                         }
+                    )
+                }
+            ) { paddingValues ->
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = paddingValues.calculateBottomPadding())
+                ) { page ->
+                    when (page) {
+                        0 -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                OptimizedTopBar(
+                                    sourceName = currentSource.name,
+                                    onSearchClick = {
+                                        coroutineScope.launch { pagerState.animateScrollToPage(1) }
+                                    }
+                                )
+                                HomeGridContent(currentSourceId = currentSource.id, onShowToast = { toastMessage = it })
+                            }
+                        }
+                        1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { CategoryScreen(onShowToast = { toastMessage = it }) }
+                        2 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { LiveScreenContent(onShowToast = { toastMessage = it }) }
+                        3 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                            ModernSettingsScreen(
+                                themeManager = themeManager,
+                                currentSource = currentSource,
+                                onOpenSourceDialog = { showSourceDialog = true },
+                                onShowToast = { toastMessage = it }
+                            )
+                        }
+                        4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { ProfileScreen(onShowToast = { toastMessage = it }) }
                     }
-                )
-            }
-        ) { paddingValues ->
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) { page ->
-                when (page) {
-                    0 -> HomeGridContent(currentSourceId = currentSource.id, onShowToast = { toastMessage = it })
-                    1 -> CategoryScreen(onShowToast = { toastMessage = it })
-                    2 -> LiveScreenContent(onShowToast = { toastMessage = it })
-                    3 -> ModernSettingsScreen(themeManager = themeManager, onShowToast = { toastMessage = it })
                 }
             }
-        }
 
         // 浮层极简提示框 (ModernToastMessage，自动适配深浅色与安全避让)
         androidx.compose.animation.AnimatedVisibility(
@@ -210,63 +223,35 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
 }
 
 // -------------------------------------------------------------------------------------
-// 1. 顶部操作栏
+// 1. 顶部操作栏 (首页极简大标题与搜索按钮)
 // -------------------------------------------------------------------------------------
 @Composable
 fun OptimizedTopBar(
     sourceName: String = "暴风片库",
-    onSourceClick: () -> Unit = {},
     onSearchClick: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .statusBarsPadding(), // 沉浸式状态栏避让
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 优化后的数据源切换按钮
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp)) // 更平滑的圆角
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)) // 微弱的背景色暗示可点击区域
-                .clickable { onSourceClick() }
-                .padding(vertical = 6.dp, horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // 使用代表数据/存储的图标，消除“菜单”歧义
-            Icon(
-                imageVector = Icons.Default.Storage, 
-                contentDescription = "Data Source",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = sourceName,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            // 保留下拉箭头，明确交互意图
-            Icon(
-                imageVector = Icons.Default.ArrowDropDown,
-                contentDescription = "Switch",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
-        }
+        Text(
+            text = sourceName,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold
+        )
 
-        // 右侧搜索按钮保持现代化设计
         IconButton(
             onClick = { onSearchClick() },
             modifier = Modifier.size(40.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Search,
-                contentDescription = "Search",
+                contentDescription = "搜索",
                 tint = MaterialTheme.colorScheme.onSurface
             )
         }
@@ -370,7 +355,7 @@ fun LiveScreenContent(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp)
                 .aspectRatio(1.77f)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color.Black)
@@ -493,11 +478,13 @@ fun LiveScreenContent(
 }
 
 // -------------------------------------------------------------------------------------
-// 5. 设置页面与主题模式切换 (集成 ThemeManager、HSV 色盘与 DataStore 持久化)
+// 5. 设置页面与主题模式切换 (集成数据源订阅、ThemeManager、HSV 色盘与 DataStore 持久化)
 // -------------------------------------------------------------------------------------
 @Composable
 fun ModernSettingsScreen(
     themeManager: ThemeManager,
+    currentSource: MockDataSource,
+    onOpenSourceDialog: () -> Unit,
     onShowToast: (String) -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -515,6 +502,52 @@ fun ModernSettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
     ) {
+        // 数据源订阅管理分组
+        item {
+            SettingSectionHeader("影视数据源")
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenSourceDialog() }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Storage,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "订阅数据源",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "当前: ${currentSource.name} (${currentSource.description})",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         // 主题个性化分组
         item {
             SettingSectionHeader("外观与主题")
@@ -965,31 +998,41 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 }
 
 // -------------------------------------------------------------------------------------
-// 6. 底部导航栏 (指示器自适应深浅色配色)
+// 6. 底部导航栏 (沉底铺满 + 固定尺寸 Box 强制统一光标尺寸与样式)
 // -------------------------------------------------------------------------------------
 @Composable
 fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit) {
+    // 强制沉底铺满，移除悬浮修饰符
     NavigationBar(
+        modifier = Modifier.fillMaxWidth(),
         containerColor = MaterialTheme.colorScheme.background,
         contentColor = MaterialTheme.colorScheme.primary,
         tonalElevation = 0.dp
     ) {
-        // 核心修改：将 Icons.Default 统一替换为 Icons.Rounded，让图标边角更圆润美观
         val tabs = listOf(
-            Triple("首页", Icons.Rounded.Home, Icons.Rounded.Home),
-            Triple("分类", Icons.Rounded.List, Icons.Rounded.List),
-            Triple("直播", Icons.Rounded.Tv, Icons.Rounded.Tv),
-            Triple("设置", Icons.Rounded.Settings, Icons.Rounded.Settings)
+            Triple("首页", Icons.Filled.Home, Icons.Filled.Home),
+            Triple("分类", Icons.Filled.List, Icons.Filled.List),
+            Triple("直播", Icons.Filled.Tv, Icons.Filled.Tv), // 实心电视机
+            Triple("设置", Icons.Filled.Settings, Icons.Filled.Settings),
+            Triple("我的", Icons.Filled.AccountCircle, Icons.Filled.AccountCircle) // 带有实心圆形底的账户图标
         )
 
         tabs.forEachIndexed { index, tab ->
             NavigationBarItem(
                 icon = {
-                    Icon(
-                        imageVector = tab.second,
-                        contentDescription = tab.first,
-                        modifier = Modifier.size(24.dp)
-                    )
+                    // 使用固定尺寸的 Box 包裹图标，强制统一高亮光标的大小
+                    Box(
+                        modifier = Modifier.size(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // 内部图标保留视觉补偿差异，但不影响外部光标
+                        val iconSize = if (tab.first == "设置") 28.dp else 26.dp
+                        Icon(
+                            imageVector = tab.second,
+                            contentDescription = tab.first,
+                            modifier = Modifier.size(iconSize)
+                        )
+                    }
                 },
                 label = {
                     Text(
@@ -1003,7 +1046,7 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant, // 确保与主题协调
+                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant, // 恢复统一光标的颜色
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1011,3 +1054,5 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
         }
     }
 }
+
+
