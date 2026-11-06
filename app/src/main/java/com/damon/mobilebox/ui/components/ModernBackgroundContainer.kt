@@ -13,54 +13,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 /**
- * 现代轻量级极光渐变背景容器 (ModernBackgroundContainer)
- * 采用双径向渐变 (Radial Gradient Glow) 绘制，避免 RenderEffect 造成的低端机掉帧问题，
- * 并能随系统深浅模式及自定义主题色动态自适应。
+ * 现代极简纯净背景容器 (ModernBackgroundContainer)
+ * 采用纯正的高清低饱和底色 (#F2F2F7)，告别模糊光晕造成的对比度不足，
+ * 让叠加其上的卡片边界分明、通透利落。
  */
 @Composable
 fun ModernBackgroundContainer(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val backgroundColor = MaterialTheme.colorScheme.background
-    val primaryColor = MaterialTheme.colorScheme.primary
-
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundColor)
-            .drawBehind {
-                val canvasWidth = size.width
-                val canvasHeight = size.height
-
-                // 绘制左上角的主题色光晕
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            primaryColor.copy(alpha = 0.12f), // 中心透明度略高
-                            Color.Transparent // 边缘消散
-                        ),
-                        center = Offset(x = canvasWidth * 0.2f, y = canvasHeight * 0.1f),
-                        radius = canvasWidth * 0.8f
-                    ),
-                    radius = canvasWidth * 0.8f,
-                    center = Offset(x = canvasWidth * 0.2f, y = canvasHeight * 0.1f)
-                )
-
-                // 绘制右侧中下方的主题色光晕，营造空间交错感
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            primaryColor.copy(alpha = 0.08f), 
-                            Color.Transparent
-                        ),
-                        center = Offset(x = canvasWidth * 0.9f, y = canvasHeight * 0.6f),
-                        radius = canvasWidth * 0.7f
-                    ),
-                    radius = canvasWidth * 0.7f,
-                    center = Offset(x = canvasWidth * 0.9f, y = canvasHeight * 0.6f)
-                )
-            }
+            .background(MaterialTheme.colorScheme.background)
     ) {
         content()
     }

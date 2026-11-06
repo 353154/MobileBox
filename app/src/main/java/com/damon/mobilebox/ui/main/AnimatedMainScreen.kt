@@ -22,12 +22,16 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.List
+import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material.icons.rounded.Home
@@ -40,6 +44,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
@@ -573,7 +578,7 @@ fun LiveScreenContent(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                             .aspectRatio(16f / 9f)
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(16.dp))
                             .background(Color(0xFF0F0F0F))
                     }
                 ) {
@@ -598,21 +603,31 @@ fun LiveScreenContent(
                         )
                     } else {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            // 左上角 LIVE 红色胶囊徽章
+                            // 内嵌 LIVE 胶囊徽章 (内嵌于播放器内部留足 16dp 呼吸边距，杜绝切角贴片感)
                             Surface(
                                 color = Color(0xFFE50914),
-                                shape = RoundedCornerShape(4.dp),
+                                shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .padding(start = 14.dp, top = 14.dp)
+                                    .padding(16.dp)
                             ) {
-                                Text(
-                                    text = "LIVE",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(Color.White, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "LIVE",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
                             }
 
                             // 居中区域：大播放按钮 + 正在直播频道标题 + 节目信息
@@ -668,37 +683,58 @@ fun LiveScreenContent(
                 // 2. 播放框下方的电视直播分类与电视台列表 (仅在竖屏状态下展示，横屏下完全隐藏避让)
                 if (!isLandscape) {
                     if (categoryList.size > 1) {
-                        LazyRow(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                .height(50.dp)
                         ) {
-                            items(categoryList.indices.toList()) { index ->
-                                val (groupName, channels) = categoryList[index]
-                                val isSelected = index == (selectedGroupIndex + 1)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = {
-                                        selectedGroupIndex = index - 1
-                                    },
-                                    label = {
-                                        Text(
-                                            text = "$groupName (${channels.size})",
-                                            fontSize = 13.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                        )
-                                    },
-                                    shape = RoundedCornerShape(50),
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    border = null
-                                )
+                            LazyRow(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(start = 16.dp, end = 36.dp, top = 6.dp, bottom = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(categoryList.indices.toList()) { index ->
+                                    val (groupName, channels) = categoryList[index]
+                                    val isSelected = index == (selectedGroupIndex + 1)
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = {
+                                            selectedGroupIndex = index - 1
+                                        },
+                                        label = {
+                                            Text(
+                                                text = "$groupName (${channels.size})",
+                                                fontSize = 13.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(50),
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                        ),
+                                        border = null
+                                    )
+                                }
                             }
+
+                            // 右侧渐变消隐遮罩 (Fading Edge)：明确暗示右侧可继续水平滑动
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .width(32.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color.Transparent,
+                                                MaterialTheme.colorScheme.background
+                                            )
+                                        )
+                                    )
+                            )
                         }
                     }
 
@@ -724,6 +760,11 @@ fun LiveScreenContent(
                                     } else {
                                         MaterialTheme.colorScheme.surface
                                     }
+                                ),
+                                border = BorderStroke(
+                                    0.5.dp,
+                                    if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                                 ),
                                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                             ) {
@@ -824,7 +865,9 @@ fun ModernSettingsScreen(
             SettingSectionHeader("影视数据源")
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -879,7 +922,9 @@ fun ModernSettingsScreen(
             SettingSectionHeader("外观与主题")
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     // 1. 深浅色模式切换
@@ -1016,14 +1061,24 @@ fun ModernSettingsScreen(
             SettingSectionHeader("播放内核与视频增强")
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("MPV 高性能解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                             Text(if (isMpvKernel) "已启用 MPV 原生解码 (支持 ASS 压制字幕与 Anime4K)" else "已回退为 IJKPlayer 内核", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
@@ -1043,7 +1098,9 @@ fun ModernSettingsScreen(
             SettingSectionHeader("安全与系统关于")
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -1141,11 +1198,12 @@ fun ModernSettingsScreen(
 
 @Composable
 fun SettingSectionHeader(title: String) {
+    Spacer(modifier = Modifier.height(6.dp))
     Text(
         text = title,
-        color = MaterialTheme.colorScheme.primary,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
     )
 }
@@ -1328,7 +1386,7 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 // -------------------------------------------------------------------------------------
 @Composable
 fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit) {
-    // 强制沉底铺满，移除悬浮修饰符
+    // 强制沉底铺满，统一规范高亮胶囊与 Outlined/Filled 图标对比
     NavigationBar(
         modifier = Modifier.fillMaxWidth(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -1336,27 +1394,28 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
         tonalElevation = 0.dp
     ) {
         val tabs = listOf(
-            Triple("首页", Icons.Filled.Home, Icons.Filled.Home),
-            Triple("分类", Icons.Filled.List, Icons.Filled.List),
-            Triple("直播", Icons.Filled.Tv, Icons.Filled.Tv), // 实心电视机
-            Triple("设置", Icons.Filled.Settings, Icons.Filled.Settings),
-            Triple("我的", Icons.Filled.AccountCircle, Icons.Filled.AccountCircle) // 带有实心圆形底的账户图标
+            Triple("首页", Icons.Outlined.Home, Icons.Filled.Home),
+            Triple("分类", Icons.Outlined.GridView, Icons.Filled.GridView),
+            Triple("直播", Icons.Outlined.LiveTv, Icons.Filled.LiveTv),
+            Triple("设置", Icons.Outlined.Settings, Icons.Filled.Settings),
+            Triple("我的", Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle)
         )
 
         tabs.forEachIndexed { index, tab ->
+            val isSelected = selectedIndex == index
             NavigationBarItem(
                 icon = {
-                    // 使用固定尺寸的 Box 包裹图标，强制统一高亮光标的大小
+                    // 增大指示器内边距与横向包络宽度 (56.dp x 30.dp)，提供舒适呼吸感
                     Box(
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier
+                            .width(56.dp)
+                            .height(30.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        // 内部图标保留视觉补偿差异，但不影响外部光标
-                        val iconSize = if (tab.first == "设置") 28.dp else 26.dp
                         Icon(
-                            imageVector = tab.second,
+                            imageVector = if (isSelected) tab.third else tab.second,
                             contentDescription = tab.first,
-                            modifier = Modifier.size(iconSize)
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 },
@@ -1364,17 +1423,17 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
                     Text(
                         text = tab.first,
                         fontSize = 11.sp,
-                        fontWeight = if (selectedIndex == index) FontWeight.Bold else FontWeight.Medium
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                     )
                 },
-                selected = selectedIndex == index,
+                selected = isSelected,
                 onClick = { onTabSelected(index) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant, // 恢复统一光标的颜色
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                 )
             )
         }

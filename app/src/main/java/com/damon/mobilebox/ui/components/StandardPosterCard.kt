@@ -172,23 +172,25 @@ fun StandardPosterCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // 标题排版
+        // 标题排版 (强制单行截断，防止网格高度被破坏)
         Text(
             text = title,
             color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
         )
-        Spacer(modifier = Modifier.height(4.dp))
-        // 副标题排版
+        Spacer(modifier = Modifier.height(3.dp))
+        // 副标题排版 (严格单行，长文本自动省略)
         Text(
             text = subtitle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
