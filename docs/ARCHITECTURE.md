@@ -1,0 +1,87 @@
+# MobileBox: Clean Architecture 架构设计全景说明书
+
+> **文档状态**：已冻结基线，处于分阶段执行中  
+> **文档目标**：为本项目从 TVBox（电视版）重构为原生 Android 移动端（手机/折叠屏）提供顶层设计依据，保证后续任何开发者或 Agent 能够无缝接手。
+
+---
+
+## 1. 架构总览与模块拓扑 (Clean Architecture)
+
+本项目遵循 Google 推荐的 **Clean Architecture (整洁架构)** 规范，采用单向依赖流与关注点分离（UI -> Domain <- Data），按照功能多模块（Multi-Module）架构组织：
+
+```mermaid
+graph TD
+    subgraph App_Layer ["app 模块 (Application Shell)"]
+        App[MobileBoxApp / Navigation / DI Setup]
+    end
+
+    subgraph Feature_Layers ["feature 业务表现层 (Jetpack Compose / MVI)"]
+        FeatureVod[feature:vod (点播首页/海报流)]
+        FeaturePlayer[feature:player (双核播放器/手势/画中画)]
+        FeatureLive[feature:live (电视直播/频道EPG)]
+        FeatureSearch[feature:search (聚合搜索/多源流)]
+        FeatureSetting[feature:setting (配置中心/WebDAV/安全)]
+    end
+
+    subgraph Core_Layers ["core 核心基础层"]
+        CoreUI[core:ui (Design System / 手势 / 动效)]
+        CoreModel[core:model (全局 Domain Entity / 数据模型)]
+        CoreData[core:data (Repository 接口与实现 / 缓存策略)]
+        CoreDatabase[core:database (Room 本地数据库 / 历史与收藏)]
+        CoreNetwork[core:network (OkHttp / Retrofit / Spider爬虫引擎)]
+        CorePlayer[core:player-engine (IJKPlayer / MPV 双核抽象层)]
+        CoreCommon[core:common (Dispatchers / 工具扩展 / 加密)]
+    end
+
+    App --> FeatureVod
+    App --> FeaturePlayer
+    App --> FeatureLive
+    App --> FeatureSearch
+    App --> FeatureSetting
+
+    FeatureVod --> CoreUI
+    FeatureVod --> CoreData
+    FeatureVod --> CoreModel
+
+    FeaturePlayer --> CoreUI
+    FeaturePlayer --> CorePlayer
+    FeaturePlayer --> CoreData
+
+    FeatureLive --> CoreUI
+    FeatureLive --> CoreData
+
+    FeatureSearch --> CoreData
+    FeatureSetting --> CoreData
+
+    CoreData --> CoreDatabase
+    CoreData --> CoreNetwork
+    CoreData --> CoreModel
+```
+
+---
+
+## 2. 依赖管理规范 (Gradle Version Catalog)
+
+项目完全采用 Gradle 8.x + **Kotlin DSL (`build.gradle.kts`)**，所有库依赖、插件版本统一收敛至 `gradle/libs.versions.toml`。严禁在子模块中硬编码版本号或使用旧式 `ext` 变量。
+
+### 核心技术栈基准
+
+| 组件 | 技术选型 | 说明 |
+| :--- | :--- | :--- |
+| **语言** | Kotlin 1.9+ / Java 17 | 协程异步、严格空安全 |
+| **UI 框架** | Jetpack Compose (BOM 2024.x) | 声明式响应式 UI，全面支持动态手势与动画 |
+| **依赖注入** | Google Hilt 2.50+ | 模块间解耦、ViewModel 自动化注入 |
+| **异步流** | Coroutines 1.8+ & Flow | 替代 RxJava / Handler / AsyncTask |
+| **播放器内核**| IJKPlayer + MPV Lib | C/C++ 双解码器统一在 `core:player-engine` 封装门面 |
+| **本地持久化**| Room 2.6+ | SQLite ORM，支持 Flow 响应式观察数据流 |
+| **系统 API** | Android 14+ (API 34) 适配 | 最低兼容 API 24 (Android 7.0) |
+
+---
+
+## 3. TV 到 Mobile 核心差异与红线规则
+
+所有参与重构的 Agent 必须严格恪守以下**重构红线**：
+1. **禁止引入任何 Leanback 依赖**：绝对不可出现 `androidx.leanback` 相关的类与布局。
+2. **禁止依赖焦点导航**：严禁在布局中写死 `android:focusable="true"`，禁用任何 D-pad 物理按键事件分发；所有交互基于点击、拖拽、长按、滑动边缘手势。
+3. **禁止写死横屏**：主程序和列表页默认竖屏，仅在播放器全屏状态或用户开启自动旋转时触发横屏模式。
+4. **废弃 API 零容忍**：诸如 `startActivityForResult`、旧式软键盘监听、旧版 Window 全屏沉浸等已被弃用的 API 必须使用 `ActivityResultContracts` 与 `WindowInsetsControllerCompat`。
