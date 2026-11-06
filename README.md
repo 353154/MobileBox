@@ -33,12 +33,17 @@
 
 ## 📚 详细文档导航
 
+- 📖 **【必读】Agent 与开发者交接操作手册**：[docs/HANDOVER_GUIDE.md](docs/HANDOVER_GUIDE.md)  
+  *（包含：项目绝对工作目录、编译环境一键启动命令、交接文档编辑与维护 SOP、CHANGELOG 记录模板与 Git 推送流水线）*
 - 📐 **架构全景说明书**：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（含 Clean Architecture 拓扑、红线规则与持续交付铁律）
 - 🗺️ **15 个小步路线图与真机验收表**：[docs/REFACTOR_ROADMAP.md](docs/REFACTOR_ROADMAP.md)
 - 📜 **版本演进与操作审计日志**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
 
-## 📱 调试与真机基线
-- **当前联调设备**：OPPO / OnePlus `CPH2723` (Android 17, arm64-v8a)
-- **编译工具链**：JDK 17 + Android SDK 34 + Gradle 8.6
+## 💻 核心工作目录与环境基线 (Quick Info)
+- **工程物理工作目录**：`/Users/damon/Documents/MobileBox`
+- **原版代码参考路径**：`/tmp/sayxiaoyan_Box` (对应 [sayxiaoyan/Box](https://github.com/sayxiaoyan/Box))
+- **当前联调真机**：OPPO / OnePlus `CPH2723` (Android 17, arm64-v8a, 设备 ID: `3B1F67EA9BBUHK76`)
+- **JDK 与 SDK**：JDK 17 (`~/.tools/jdk-17.0.21+9`) + Android SDK 34 (`~/Android/sdk`)
+

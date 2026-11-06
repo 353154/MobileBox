@@ -106,7 +106,9 @@ graph TD
 ## 4. Agent 协作与持续交付铁律 (Git & Validation Standard)
 
 所有接手本项目的 Agent 必须严格遵守以下**流水线闭环规范**：
+- **操作完全指南**：具体工作目录、命令 Cheatsheet、交接文档编辑 SOP 与 CHANGELOG 标准模板详见 [docs/HANDOVER_GUIDE.md](HANDOVER_GUIDE.md)。
 - **小步验证原则**：每一个功能小步（Step X.X）编写完成后，必须首先完成本地编译并在连接的真机（通过 ADB）上安装拉起，抓取真机截图或日志确认运行无误。
 - **真机验证后强制推仓**：**每次修改经真机验证通过后，必须立即将改动提交并同步推送至 GitHub 远程主仓库 (`https://github.com/353154/MobileBox.git` 的 `main` 分支)**，绝不允许在本地积压未推送代码。
 - **审计日志同步追加**：每次推送前，必须在 `CHANGELOG.md` 中记录本次小步的核心操作、改动文件、真机验证状态与提交 Hash。
+
 

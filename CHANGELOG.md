@@ -143,6 +143,8 @@
 1. **`README.md` 创建**：确立工程主页，详述本项目与原 TVBox 的渊源、重构差异对照表及文档导航。
 2. **`docs/ARCHITECTURE.md` 补充第 0 节**：显式声明源项目 URL、目标平台、重构逻辑及与原项目的架构映射。
 3. **`docs/REFACTOR_ROADMAP.md` 增加源项目标头**。
+4. **`docs/HANDOVER_GUIDE.md` 创建**：编写 Agent 交接完全指南，明确工作目录绝对路径、交接文档编辑维护 SOP 与 CHANGELOG 强制记录模板。
+
 
 
 
