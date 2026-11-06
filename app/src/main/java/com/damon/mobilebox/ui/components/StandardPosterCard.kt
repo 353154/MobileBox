@@ -1,5 +1,7 @@
 package com.damon.mobilebox.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -7,11 +9,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -21,7 +24,7 @@ import coil.compose.AsyncImage
 
 /**
  * 全局统一的标准海报组件 (可在首页、搜索、分类等所有页面复用)
- * 严格按照 MD3 规范：2:3 黄金比例、右上角 6dp 评分暗底角标、自动跟随主题深浅色
+ * 严格按照 MD3 规范：2:3 黄金比例、右上角 6dp 评分暗底角标、渐入动效、自动跟随主题深浅色
  */
 @Composable
 fun StandardPosterCard(
@@ -32,8 +35,19 @@ fun StandardPosterCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {}
 ) {
+    var isMounted by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        isMounted = true
+    }
+    val alphaAnim by animateFloatAsState(
+        targetValue = if (isMounted) 1f else 0f,
+        animationSpec = tween(durationMillis = 350),
+        label = "posterAlpha"
+    )
+
     Column(
         modifier = modifier
+            .graphicsLayer { alpha = alphaAnim }
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .clickable { onClick() }

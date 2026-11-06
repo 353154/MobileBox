@@ -21,7 +21,14 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tv
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.List
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,8 +40,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.damon.mobilebox.ui.theme.ThemeManager
 import com.damon.mobilebox.ui.theme.ThemePreference
+import com.damon.mobilebox.ui.theme.ThemeColorMode
+import com.damon.mobilebox.ui.theme.AppThemeState
 import com.damon.mobilebox.ui.components.StandardPosterCard
 import com.damon.mobilebox.ui.components.ModernToastMessage
+import com.damon.mobilebox.ui.components.CupertinoSwitch
+import com.damon.mobilebox.ui.components.ColorPickerDialog
+import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
+import com.damon.mobilebox.ui.components.ModernBackgroundContainer
+import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.category.CategoryScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -60,9 +74,9 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    ModernBackgroundContainer {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color.Transparent,
             topBar = {
                 OptimizedTopBar(
                     sourceName = currentSource.name,
@@ -90,8 +104,8 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
                     .padding(paddingValues)
             ) { page ->
                 when (page) {
-                    0 -> HomeGridContent(currentSourceId = currentSource.id)
-                    1 -> CategoryScreen()
+                    0 -> HomeGridContent(currentSourceId = currentSource.id, onShowToast = { toastMessage = it })
+                    1 -> CategoryScreen(onShowToast = { toastMessage = it })
                     2 -> LiveScreenContent()
                     3 -> ModernSettingsScreen(themeManager = themeManager)
                 }
@@ -244,38 +258,83 @@ fun OptimizedTopBar(
 }
 
 // -------------------------------------------------------------------------------------
-// 2. 首页精选点播 (根据选中的数据源动态切换电影列表，全局复用 StandardPosterCard)
+// 2. 首页精选点播 (根据选中的数据源动态切换电影列表，全局 StandardPullToRefreshBox 物理阻尼与位移动画)
 // -------------------------------------------------------------------------------------
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeGridContent(currentSourceId: String = "bf") {
-    val context = LocalContext.current
-    val movieList = if (currentSourceId == "hn") MockDataProvider.hnVodList else MockDataProvider.homeVodList
+fun HomeGridContent(
+    currentSourceId: String = "bf",
+    onShowToast: (String) -> Unit = {}
+) {
+    val baseList = if (currentSourceId == "hn") MockDataProvider.hnVodList else MockDataProvider.homeVodList
+    var currentList by remember(currentSourceId) { mutableStateOf(baseList) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = 8.dp,
-            bottom = 96.dp // 底部留白，防 BottomNavigationBar 遮挡
-        ),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    StandardPullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            coroutineScope.launch {
+                isRefreshing = true
+                delay(1200)
+                val newId = System.currentTimeMillis().toString()
+                val newCandidates = listOf(
+                    Pair("黑神话：悟空 剧场版", "https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg"),
+                    Pair("异形：夺命舰", "https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg"),
+                    Pair("死侍与金钢狼", "https://image.tmdb.org/t/p/w500/8Vt6mWEReuy4Of61Lnj5Xj704m8.jpg"),
+                    Pair("边水往事 结局篇", "https://image.tmdb.org/t/p/w500/7V0Ebks0GgpKvQ7QbLAIdX5dos4.jpg")
+                )
+                val chosen = newCandidates.random()
+                val newAddedMovie = MockMovie(
+                    id = newId,
+                    title = chosen.first,
+                    remarks = "4K 极清首发",
+                    category = "电影",
+                    rating = "9.5",
+                    posterUrl = chosen.second
+                )
+                // 在顶部插入新数据，下方旧数据伴随位移动画丝滑推下
+                currentList = listOf(newAddedMovie) + currentList
+                isRefreshing = false
+                onShowToast("已为您刷新并置顶最新影片：《${newAddedMovie.title}》")
+            }
+        },
         modifier = Modifier.fillMaxSize()
     ) {
-        items(
-            items = movieList,
-            key = { movie -> "home_${currentSourceId}_${movie.id}" }
-        ) { movie ->
-            StandardPosterCard(
-                title = movie.title,
-                subtitle = movie.remarks,
-                score = movie.rating,
-                posterUrl = movie.posterUrl,
-                onClick = {
-                    Toast.makeText(context, "点击播放: ${movie.title}", Toast.LENGTH_SHORT).show()
-                }
-            )
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 24.dp, // 顶部预留出指示器的高度空间，避免遮挡第一排海报
+                bottom = 96.dp // 底部留白，防 BottomNavigationBar 遮挡
+            ),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(
+                items = currentList,
+                key = { movie -> movie.id },
+                contentType = { "vod_poster_card" }
+            ) { movie ->
+                StandardPosterCard(
+                    title = movie.title,
+                    subtitle = movie.remarks,
+                    score = movie.rating,
+                    posterUrl = movie.posterUrl,
+                    modifier = animateItem(
+                        fadeInSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                        placementSpec = androidx.compose.animation.core.spring(
+                            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
+                            stiffness = androidx.compose.animation.core.Spring.StiffnessLow
+                        )
+                    ),
+                    onClick = {
+                        onShowToast("点击播放: ${movie.title}")
+                    }
+                )
+            }
         }
     }
 }
@@ -417,13 +476,15 @@ fun LiveScreenContent() {
 }
 
 // -------------------------------------------------------------------------------------
-// 5. 设置页面与主题模式切换 (集成 ThemeManager 与 DataStore 持久化)
+// 5. 设置页面与主题模式切换 (集成 ThemeManager、HSV 色盘与 DataStore 持久化)
 // -------------------------------------------------------------------------------------
 @Composable
 fun ModernSettingsScreen(themeManager: ThemeManager) {
     val coroutineScope = rememberCoroutineScope()
-    val currentTheme by themeManager.themePreferenceFlow.collectAsState(initial = ThemePreference.SYSTEM)
+    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
+    val currentTheme = themeState.themePreference
     var showThemeDialog by remember { mutableStateOf(false) }
+    var showColorDialog by remember { mutableStateOf(false) }
 
     var isMpvKernel by remember { mutableStateOf(true) }
     var isBiometricEnabled by remember { mutableStateOf(false) }
@@ -442,6 +503,7 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    // 1. 深浅色模式切换
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -476,6 +538,57 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                             modifier = Modifier.size(18.dp)
                         )
                     }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
+
+                    // 2. 主题色与色盘选择入口
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showColorDialog = true }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ColorLens,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "应用主题色",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (themeState.colorMode == ThemeColorMode.CUSTOM) {
+                                    val hex = String.format("#%06X", 0xFFFFFF and themeState.customColorInt)
+                                    "自定义 ($hex)"
+                                } else {
+                                    themeState.colorMode.title
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        // 右侧展示当前主题色的微型圆球
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -493,17 +606,14 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("MPV 高性能解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                             Text(if (isMpvKernel) "已启用 MPV 原生解码 (支持 ASS 压制字幕与 Anime4K)" else "已回退为 IJKPlayer 内核", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         }
-                        Switch(
+                        Spacer(modifier = Modifier.width(16.dp))
+                        CupertinoSwitch(
                             checked = isMpvKernel,
-                            onCheckedChange = { isMpvKernel = it },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
+                            onCheckedChange = { isMpvKernel = it }
                         )
                     }
                 }
@@ -523,17 +633,14 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("生物识别隐私锁 (Biometric)", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                             Text("开启后访问成人/私密分类需验证指纹或面容", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         }
-                        Switch(
+                        Spacer(modifier = Modifier.width(16.dp))
+                        CupertinoSwitch(
                             checked = isBiometricEnabled,
-                            onCheckedChange = { isBiometricEnabled = it },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
+                            onCheckedChange = { isBiometricEnabled = it }
                         )
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
@@ -589,6 +696,21 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
             containerColor = MaterialTheme.colorScheme.surface
         )
     }
+
+    // 主题色选择与 HSV 色盘弹窗
+    if (showColorDialog) {
+        ColorPickerDialog(
+            initialColor = Color(themeState.customColorInt),
+            initialMode = themeState.colorMode,
+            onDismiss = { showColorDialog = false },
+            onSave = { mode, colorInt ->
+                coroutineScope.launch {
+                    themeManager.saveColorMode(mode, colorInt)
+                }
+                showColorDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -636,19 +758,19 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
         contentColor = MaterialTheme.colorScheme.primary,
         tonalElevation = 0.dp
     ) {
+        // 核心修改：将 Icons.Default 统一替换为 Icons.Rounded，让图标边角更圆润美观
         val tabs = listOf(
-            Triple("首页", Icons.Default.Home, Icons.Outlined.Home),
-            Triple("分类", Icons.Default.List, Icons.Outlined.List),
-            Triple("直播", Icons.Default.Tv, Icons.Outlined.Tv),
-            Triple("设置", Icons.Default.Settings, Icons.Outlined.Settings)
+            Triple("首页", Icons.Rounded.Home, Icons.Rounded.Home),
+            Triple("分类", Icons.Rounded.List, Icons.Rounded.List),
+            Triple("直播", Icons.Rounded.Tv, Icons.Rounded.Tv),
+            Triple("设置", Icons.Rounded.Settings, Icons.Rounded.Settings)
         )
 
         tabs.forEachIndexed { index, tab ->
-            val isSelected = selectedIndex == index
             NavigationBarItem(
                 icon = {
                     Icon(
-                        imageVector = if (isSelected) tab.second else tab.third,
+                        imageVector = tab.second,
                         contentDescription = tab.first,
                         modifier = Modifier.size(24.dp)
                     )
@@ -657,15 +779,15 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
                     Text(
                         text = tab.first,
                         fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        fontWeight = if (selectedIndex == index) FontWeight.Bold else FontWeight.Medium
                     )
                 },
-                selected = isSelected,
+                selected = selectedIndex == index,
                 onClick = { onTabSelected(index) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant, // 药丸底色：深色下为深蓝灰，浅色下为淡蓝灰
+                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant, // 确保与主题协调
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )

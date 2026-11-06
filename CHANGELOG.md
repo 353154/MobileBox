@@ -4,6 +4,50 @@
 
 ---
 
+## [2026-11-06] Step 2.2 完成：点播瀑布流海报、下拉刷新物理阻尼推移、iOS 仿生开关、HSV 圆形色盘与主题色极光背景
+
+### 👨‍💻 操作人员 / Agent
+- **角色**：Senior Android Architect & Kotlin Specialist (Antigravity Agent)
+- **任务目标**：重构点播瀑布流卡片加载动画与物理下拉阻尼手势；构建 iOS 风格平滑动画开关；打造全局 HSV 交互式圆形色盘（Color Wheel）自定义主题引擎；增加纯硬件加速主题色极光背景，并彻底解决指示器残留 Bug。
+
+### 📝 核心改动文件明细
+1. `app/src/main/java/com/damon/mobilebox/ui/components/StandardPullToRefreshBox.kt`：
+   - 抽象全局统一的下拉刷新容器，结合 MD3 `PullToRefreshState` 嵌套滚动链与 `Modifier.graphicsLayer`。
+   - 内容物理随动：页面内容绑定 `translationY = pullToRefreshState.verticalOffset`，下拉时真实推移，松手时物理弹簧阻尼回弹。
+   - 彻底修复指示器残留（Stuck Indicator）：采用严格双向状态同步与回弹动态渐隐计算（`alpha = fraction`，`scaleX/Y = fraction`），彻底解决刷新圈悬挂在屏幕顶部的残留 Bug。
+2. `app/src/main/java/com/damon/mobilebox/ui/components/CupertinoSwitch.kt`：
+   - 弃用 MD3 笨重 Switch，手绘 51dp×31dp 标准 iOS 比例仿生开关。
+   - 使用 `animateDpAsState` 与物理弹簧曲线控制 27dp 纯白高光滑块位移，使用 `animateColorAsState` 控制开启时高饱和主题色轨迹。
+3. `app/src/main/java/com/damon/mobilebox/ui/components/ColorPickerDialog.kt`：
+   - 重构 HSV 调色板为交互式圆形色盘（`ColorWheel`），使用 `Brush.sweepGradient` 绘制 360 度色相（Hue），叠加 `Brush.radialGradient` 呈现中心到边缘的饱和度（Saturation）。
+   - 结合 `pointerInput` 手势监听（拖拽与点击），运用极坐标三角函数（`atan2` 与 `hypot`）实现点触滑动双模取色。
+   - 绘制高对比度双层 Thumb 指示环与明度 Slider，支持实时 Hex 显示及 DataStore 持久化。
+4. `app/src/main/java/com/damon/mobilebox/ui/components/ModernBackgroundContainer.kt`：
+   - 抽离轻量级极光渐变背景容器，使用 `Modifier.drawBehind` 与纯硬件加速的 `Brush.radialGradient` 分别在左上角与右侧中下部绘制两处主题色流光。
+   - 彻底杜绝 `RenderEffect.createBlurEffect` 在低端设备上的卡顿与掉帧隐患，并与主题色实时流光联动。
+5. `app/src/main/java/com/damon/mobilebox/ui/components/ItemAnimationCompat.kt` & `StandardPosterCard.kt`：
+   - 封装 `LazyGridItemScope.animateItem` 动画扩展，并在海报卡片入场时注入柔和淡入动效，解决列表头部插入新项时的瞬间闪现问题。
+6. `app/src/main/java/com/damon/mobilebox/ui/theme/AppTheme.kt`：
+   - 增加 `ThemeColorMode` 枚举（DEFAULT 极客蓝、DYNAMIC 壁纸取色、CUSTOM 自定义调色盘）。
+   - 升级动态混色引擎：支持自定义色盘颜色直接覆盖 `MaterialTheme.colorScheme.primary`，实现全局 UI 秒级无感实时换肤。
+7. `app/src/main/java/com/damon/mobilebox/ui/main/AnimatedMainScreen.kt` & `CategoryScreen.kt`：
+   - 全面接入 `ModernBackgroundContainer`，并将 `Scaffold` 底色设为透明，使极光渐变自然透出。
+   - 接入全局 `StandardPullToRefreshBox` 与 `CupertinoSwitch`。
+
+### 📱 真机实测验证状态
+- **测试设备**：`CPH2723` (Android 17, arm64-v8a)
+- **编译状态**：Gradle `assembleDebug` 成功。
+- **真机实测效果**：
+  - 首页及分类页下拉时，页面内容流畅跟随手指下移，松手时弹性回弹，顶部刷新圈回弹后完全淡出无残留；
+  - 设置页面自定义色盘在真机屏幕上触控拖拽取色丝滑，Hex 色值实时更新，保存后全局极光背景与开关/高亮瞬间变色；
+  - iOS 风格开关在深色与浅色模式下点击回弹利落，无卡顿。
+- **用户验收结果**：用户实机测试并明确确认“**验证通过**”。
+
+### 🌐 Git 提交与同步
+- **远程分支**：`origin/main`
+
+---
+
 ## [2026-11-06] Step 2.1 完成：底部四栏导航与现代化 MD3 UI 体系全量重构
 
 ### 👨‍💻 操作人员 / Agent

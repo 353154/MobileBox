@@ -4,16 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -28,59 +22,79 @@ import kotlinx.coroutines.flow.map
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
 enum class ThemePreference(val value: Int, val title: String) {
-    SYSTEM(0, "跟随系统"),
-    LIGHT(1, "浅色模式"),
-    DARK(2, "深色模式")
+    SYSTEM(0, "跟随系统"), LIGHT(1, "浅色模式"), DARK(2, "深色模式")
 }
+
+// 主题色模式枚举
+enum class ThemeColorMode(val value: Int, val title: String) {
+    DEFAULT(0, "默认极客蓝"),
+    DYNAMIC(1, "跟随系统壁纸 (Android 12+)"),
+    CUSTOM(2, "自定义颜色")
+}
+
+data class AppThemeState(
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val colorMode: ThemeColorMode = ThemeColorMode.DEFAULT,
+    val customColorInt: Int = 0xFF2F81F7.toInt() // 默认自定义起始颜色 (高饱和度亮蓝)
+)
 
 class ThemeManager(private val context: Context) {
     companion object {
         private val THEME_KEY = intPreferencesKey("theme_preference")
+        private val COLOR_MODE_KEY = intPreferencesKey("color_mode")
+        private val CUSTOM_COLOR_KEY = intPreferencesKey("custom_color")
     }
 
-    val themePreferenceFlow: Flow<ThemePreference> = context.dataStore.data.map { preferences ->
-        val themeValue = preferences[THEME_KEY] ?: ThemePreference.SYSTEM.value
-        ThemePreference.entries.find { it.value == themeValue } ?: ThemePreference.SYSTEM
+    val appThemeStateFlow: Flow<AppThemeState> = context.dataStore.data.map { pref ->
+        AppThemeState(
+            themePreference = ThemePreference.entries.find { it.value == (pref[THEME_KEY] ?: 0) } ?: ThemePreference.SYSTEM,
+            colorMode = ThemeColorMode.entries.find { it.value == (pref[COLOR_MODE_KEY] ?: 0) } ?: ThemeColorMode.DEFAULT,
+            customColorInt = pref[CUSTOM_COLOR_KEY] ?: 0xFF2F81F7.toInt()
+        )
     }
+
+    // 保留兼容属性供其他组件直接监听
+    val themePreferenceFlow: Flow<ThemePreference> = appThemeStateFlow.map { it.themePreference }
 
     suspend fun saveThemePreference(theme: ThemePreference) {
-        context.dataStore.edit { preferences ->
-            preferences[THEME_KEY] = theme.value
+        context.dataStore.edit { it[THEME_KEY] = theme.value }
+    }
+
+    suspend fun saveColorMode(mode: ThemeColorMode, customColor: Int? = null) {
+        context.dataStore.edit { pref ->
+            pref[COLOR_MODE_KEY] = mode.value
+            customColor?.let { pref[CUSTOM_COLOR_KEY] = it }
         }
     }
 }
 
-// 静态深色回退色板
 private val DarkColors = darkColorScheme(
-    background = Color(0xFF111418),
-    surface = Color(0xFF1E2228),
-    primary = Color(0xFFA8C7FA),
-    onSurface = Color(0xFFE2E2E2),
-    onSurfaceVariant = Color(0xFF8A939C),
-    surfaceVariant = Color(0xFF253545)
+    background = Color(0xFF0D1117),
+    surface = Color(0xFF161B22),
+    primary = Color(0xFF2F81F7),
+    onSurface = Color(0xFFFFFFFF),
+    onSurfaceVariant = Color(0xFF8B949E),
+    surfaceVariant = Color(0xFF21262D)
 )
 
-// 静态浅色回退色板
 private val LightColors = lightColorScheme(
-    background = Color(0xFFF8F9FA),
+    background = Color(0xFFF6F8FA),
     surface = Color(0xFFFFFFFF),
-    primary = Color(0xFF0B57D0),
-    onSurface = Color(0xFF1F1F1F),
-    onSurfaceVariant = Color(0xFF5E5E5E),
-    surfaceVariant = Color(0xFFD3E3FD)
+    primary = Color(0xFF0969DA),
+    onSurface = Color(0xFF1F2328),
+    onSurfaceVariant = Color(0xFF656D76),
+    surfaceVariant = Color(0xFFEAF0F5)
 )
 
 @Composable
 fun TvBoxTheme(
     themeManager: ThemeManager,
-    dynamicColor: Boolean = true, // 默认开启 Material You 动态取色
     content: @Composable () -> Unit
 ) {
-    val themePreference by themeManager.themePreferenceFlow.collectAsState(initial = ThemePreference.SYSTEM)
+    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
     val isSystemDark = isSystemInDarkTheme()
     
-    // 确定当前是否应使用深色模式
-    val useDarkTheme = when (themePreference) {
+    val useDarkTheme = when (themeState.themePreference) {
         ThemePreference.SYSTEM -> isSystemDark
         ThemePreference.LIGHT -> false
         ThemePreference.DARK -> true
@@ -88,13 +102,22 @@ fun TvBoxTheme(
 
     val context = LocalContext.current
     
-    // 核心取色逻辑：Android 12+ 提取系统壁纸颜色，否则使用静态回退色板
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            if (useDarkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    // 核心引擎改造：根据用户配置动态决定色板
+    val colorScheme = when (themeState.colorMode) {
+        ThemeColorMode.DYNAMIC -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (useDarkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            } else {
+                if (useDarkTheme) DarkColors else LightColors
+            }
         }
-        useDarkTheme -> DarkColors
-        else -> LightColors
+        ThemeColorMode.CUSTOM -> {
+            val userPrimaryColor = Color(themeState.customColorInt)
+            // 覆盖 primary，实现全局主题色一键替换
+            if (useDarkTheme) DarkColors.copy(primary = userPrimaryColor) 
+            else LightColors.copy(primary = userPrimaryColor)
+        }
+        ThemeColorMode.DEFAULT -> if (useDarkTheme) DarkColors else LightColors
     }
 
     val view = LocalView.current
@@ -103,15 +126,10 @@ fun TvBoxTheme(
             val window = (view.context as Activity).window
             window.statusBarColor = android.graphics.Color.TRANSPARENT
             window.navigationBarColor = android.graphics.Color.TRANSPARENT
-            
-            // 确保状态栏图标在任何壁纸颜色下都能正确反色可见
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !useDarkTheme
             WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !useDarkTheme
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        content = content
-    )
+    MaterialTheme(colorScheme = colorScheme, content = content)
 }
