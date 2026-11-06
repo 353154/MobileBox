@@ -8,7 +8,8 @@
 ## 阶段一：底层环境与清单清理 (Environment & Manifest)
 - [x] **Step 1.1【环境与基线】**：本地编译工具链与真机连通
   - *验证方法*：手机桌面出现 `MobileBox` 图标，点击直接进入原生竖屏应用，彻底告别 TV Leanback 与横屏拉伸。
-- [ ] **Step 1.2【现代依赖与 Hilt】**：Kotlin DSL + Version Catalog + Hilt 依赖注入骨架
+- [x] **Step 1.2【现代依赖与 Hilt】**：Kotlin DSL + Version Catalog + Hilt 依赖注入骨架
+  - *验证方法*：应用正常启动，Logcat 确认依赖注入容器就绪，无过时类加载警告。
   - *验证方法*：应用正常启动，Logcat 确认依赖注入容器就绪，无过时类加载警告。
 
 ---

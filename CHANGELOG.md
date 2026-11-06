@@ -108,6 +108,30 @@
    - 通过 GitHub API 自动为用户创建全新公开仓库 `353154/MobileBox`。
    - 关联远程 origin 并完成首次主线代码推送：`https://github.com/353154/MobileBox`。
 
+---
+
+## [2026-11-06] Step 1.2 完成：Version Catalog 与 Hilt 依赖注入骨架验证
+
+### 👨‍💻 操作人员 / Agent
+- **角色**：Senior Android Architect & Kotlin Specialist (Antigravity Agent)
+- **任务目标**：引入 Gradle Version Catalog (`libs.versions.toml`)；配置 KSP 与 Google Hilt 依赖注入框架；编写领域服务注入并在真机验证运行。
+
+### 📝 核心交付与改动
+1. **依赖统一管理**：
+   - 创建 `gradle/libs.versions.toml`，收敛 AGP、Kotlin、KSP、AndroidX 与 Hilt 的版本管理。
+   - 根工程与 App 工程全面迁移至 `alias(libs.plugins.xxx)` 与 `libs.xxx` 声明。
+2. **Hilt 依赖反转落地**：
+   - `MobileBoxApp` 接入 `@HiltAndroidApp`。
+   - 实现 `@Singleton` 领域服务 `DeviceProfileProvider`。
+   - `MainActivity` 接入 `@AndroidEntryPoint` 并通过 `@Inject` 自动装配服务实例。
+3. **真机部署与验证**：
+   - 编译生成 `app-debug.apk`。
+   - 手机自动安装启动，ADB 日志验证：`MobileBoxApp 初始化成功，Hilt 依赖注入容器已就绪`。
+   - 截屏留档至 `screenshots/step_1_2_verified.png`。
+4. **Git 与 GitHub 同步**：
+   - 严格遵循协作铁律，验证完毕后立即提交并推送至 `origin/main`。
+
+
 
 
 

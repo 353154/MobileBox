@@ -85,3 +85,13 @@ graph TD
 2. **禁止依赖焦点导航**：严禁在布局中写死 `android:focusable="true"`，禁用任何 D-pad 物理按键事件分发；所有交互基于点击、拖拽、长按、滑动边缘手势。
 3. **禁止写死横屏**：主程序和列表页默认竖屏，仅在播放器全屏状态或用户开启自动旋转时触发横屏模式。
 4. **废弃 API 零容忍**：诸如 `startActivityForResult`、旧式软键盘监听、旧版 Window 全屏沉浸等已被弃用的 API 必须使用 `ActivityResultContracts` 与 `WindowInsetsControllerCompat`。
+
+---
+
+## 4. Agent 协作与持续交付铁律 (Git & Validation Standard)
+
+所有接手本项目的 Agent 必须严格遵守以下**流水线闭环规范**：
+- **小步验证原则**：每一个功能小步（Step X.X）编写完成后，必须首先完成本地编译并在连接的真机（通过 ADB）上安装拉起，抓取真机截图或日志确认运行无误。
+- **真机验证后强制推仓**：**每次修改经真机验证通过后，必须立即将改动提交并同步推送至 GitHub 远程主仓库 (`https://github.com/353154/MobileBox.git` 的 `main` 分支)**，绝不允许在本地积压未推送代码。
+- **审计日志同步追加**：每次推送前，必须在 `CHANGELOG.md` 中记录本次小步的核心操作、改动文件、真机验证状态与提交 Hash。
+

@@ -36,7 +36,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="TVBox 移动端重构 · Step 1.1 基线验证"
+                android:text="Step 1.2 · Version Catalog &amp; Hilt 注入验证"
                 android:textColor="#94A3B8"
                 android:textSize="14sp" />
         </LinearLayout>
@@ -63,48 +63,49 @@
                 android:id="@+id/tvCheck1"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="✅ 彻底剥除 TV Leanback 限制"
+                android:text="✅ Gradle Version Catalog (libs.versions.toml) 生效"
                 android:textColor="#E2E8F0"
-                android:textSize="15sp" />
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/tvCheck2"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="✅ 开启触摸屏支持 (Touchscreen)"
+                android:layout_marginTop="10dp"
+                android:text="✅ KSP 符号处理器配置成功"
                 android:textColor="#E2E8F0"
-                android:textSize="15sp" />
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/tvCheck3"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="✅ 手机标准 LAUNCHER 桌面入口就绪"
+                android:layout_marginTop="10dp"
+                android:text="✅ Hilt 顶层注入容器 (@HiltAndroidApp) 启动"
                 android:textColor="#E2E8F0"
-                android:textSize="15sp" />
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/tvCheck4"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="✅ 竖屏交互模式生效 (Portrait Mode)"
-                android:textColor="#E2E8F0"
-                android:textSize="15sp" />
+                android:layout_marginTop="10dp"
+                android:text="✅ @AndroidEntryPoint 属性注入成功"
+                android:textColor="#34D399"
+                android:textSize="14sp"
+                android:textStyle="bold" />
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginVertical="16dp"
+                android:layout_marginVertical="14dp"
                 android:background="#334155" />
 
             <TextView
                 android:id="@+id/tvDeviceInfo"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="已连接设备：正在读取..."
+                android:text="由 Hilt 注入的服务：正在读取..."
                 android:textColor="#38BDF8"
                 android:textSize="13sp" />
         </LinearLayout>
@@ -116,11 +117,11 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:layout_marginBottom="32dp"
-        android:text="点击测试触控响应 (Touch Test)"
+        android:text="验证 Hilt 注入实例 (Verify Hilt)"
         android:textColor="#0F172A"
         android:textSize="16sp"
         android:textStyle="bold"
-        app:backgroundTint="#38BDF8"
+        app:backgroundTint="#34D399"
         app:cornerRadius="14dp"
         app:layout_constraintBottom_toBottomOf="parent" />
 

@@ -1,30 +1,46 @@
 package com.damon.mobilebox.ui.main
 
-import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.damon.mobilebox.core.device.DeviceProfileProvider
 import com.damon.mobilebox.databinding.ActivityMainBinding
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
+/**
+ * 主界面入口
+ * 使用 @AndroidEntryPoint 标记，由 Hilt 自动注入所需依赖
+ */
+@AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private var touchCount = 0
+
+    // 核心注入：由 Hilt 依赖注入容器自动提供单例实例，无需 new
+    @Inject
+    lateinit var deviceProfileProvider: DeviceProfileProvider
+
+    private var clickCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        val model = Build.MODEL
-        val release = Build.VERSION.RELEASE
-        val sdkInt = Build.VERSION.SDK_INT
-        binding.tvDeviceInfo.text = "实机型号: $model (Android $release, API $sdkInt)"
+        // 通过被注入的 DeviceProfileProvider 获取设备硬件摘要
+        val summary = deviceProfileProvider.getDeviceSummary()
+        binding.tvDeviceInfo.text = "Hilt 注入就绪: $summary"
 
         binding.btnVerify.setOnClickListener {
-            touchCount++
-            Toast.makeText(this, "触控响应正常！点击次数: $touchCount", Toast.LENGTH_SHORT).show()
-            binding.btnVerify.text = "触控手势已响应 ($touchCount 次)"
+            clickCount++
+            val isReady = deviceProfileProvider.isHiltReady()
+            Toast.makeText(
+                this,
+                "🎉 Hilt 依赖注入验证通过！状态正常: $isReady (点击: $clickCount)",
+                Toast.LENGTH_SHORT
+            ).show()
+            binding.btnVerify.text = "Hilt 容器运转正常 (点击: $clickCount 次)"
         }
     }
 }
