@@ -2,6 +2,9 @@ package com.damon.mobilebox.ui.main
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -30,8 +33,6 @@ import androidx.compose.material.icons.rounded.List
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -58,25 +59,49 @@ import com.damon.mobilebox.ui.components.rememberParallaxAngles
 import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.category.CategoryScreen
 import com.damon.mobilebox.ui.profile.ProfileScreen
+import com.damon.mobilebox.ui.player.PlayerDetailScreen
+import com.damon.mobilebox.ui.player.VideoDetailData
+import com.damon.mobilebox.ui.player.VideoEpisode
+import com.damon.mobilebox.ui.components.TvBoxSubscriptionDialog
+import com.damon.mobilebox.data.tvbox.TvBoxRepository
+import com.damon.mobilebox.data.tvbox.TvBoxSite
+import com.damon.mobilebox.ui.detail.MovieDetailScreen
+import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
-fun AnimatedMainScreen(themeManager: ThemeManager) {
+fun AnimatedMainScreen(
+    themeManager: ThemeManager,
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    onNavigateToDetail: (String) -> Unit = {}
+) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    // 当前选中的数据源状态 (默认: 暴风片库)
-    var currentSource by remember { mutableStateOf(MockDataProvider.dataSources.first()) }
+    // 当前激活的 TVBox 站点状态 (从 TvBoxRepository 实时订阅与响应)
+    val selectedSite by TvBoxRepository.selectedSite.collectAsState()
     var showSourceDialog by remember { mutableStateOf(false) }
+
+    // 当前正在浏览的沉浸式高斯模糊详情页
+    var selectedMovieDetail by remember { mutableStateOf<VideoDetailData?>(null) }
+    // 当前正在播放的影片与具体分集 (非空时拉起 PlayerDetailScreen)
+    var currentPlayingEpisode by remember { mutableStateOf<Pair<VideoDetailData, VideoEpisode>?>(null) }
 
     // 全局自适应极简提示弹窗状态
     var toastMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
-        toastMessage = "3D 视差海报与 24 部精选大片已就绪"
+        TvBoxRepository.initFromCache(context)
+    }
+
+    LaunchedEffect(selectedSite) {
+        selectedSite?.let { site ->
+            toastMessage = "当前激活站点 · ${site.name}"
+        }
     }
 
     LaunchedEffect(toastMessage) {
@@ -94,48 +119,106 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
         LocalParallaxEnabled provides themeState.parallaxEnabled
     ) {
         ModernBackgroundContainer {
-            Scaffold(
-                containerColor = Color.Transparent,
-                bottomBar = {
-                    AnimatedBottomNavigationBar(
-                        selectedIndex = pagerState.currentPage,
-                        onTabSelected = { index ->
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(index)
-                            }
-                        }
+            when {
+                currentPlayingEpisode != null -> {
+                    BackHandler {
+                        currentPlayingEpisode = null
+                    }
+                    PlayerDetailScreen(
+                        videoData = currentPlayingEpisode!!.first,
+                        initialEpisode = currentPlayingEpisode!!.second,
+                        onBackClick = { currentPlayingEpisode = null },
+                        onShowToast = { toastMessage = it }
                     )
                 }
-            ) { paddingValues ->
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = paddingValues.calculateBottomPadding())
-                ) { page ->
-                    when (page) {
-                        0 -> {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                OptimizedTopBar(
-                                    sourceName = currentSource.name,
-                                    onSearchClick = {
-                                        coroutineScope.launch { pagerState.animateScrollToPage(1) }
+                selectedMovieDetail != null -> {
+                    BackHandler {
+                        selectedMovieDetail = null
+                    }
+                    if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+                        MovieDetailScreen(
+                            movieId = selectedMovieDetail!!.id,
+                            videoData = selectedMovieDetail!!,
+                            sharedTransitionScope = sharedTransitionScope,
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            onBack = { selectedMovieDetail = null },
+                            onPlayEpisode = { episode ->
+                                currentPlayingEpisode = Pair(selectedMovieDetail!!, episode)
+                            },
+                            onShowToast = { toastMessage = it }
+                        )
+                    }
+                }
+                else -> {
+                    Scaffold(
+                        containerColor = Color.Transparent,
+                        bottomBar = {
+                            AnimatedBottomNavigationBar(
+                                selectedIndex = pagerState.currentPage,
+                                onTabSelected = { index ->
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(index)
                                     }
-                                )
-                                HomeGridContent(currentSourceId = currentSource.id, onShowToast = { toastMessage = it })
-                            }
-                        }
-                        1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { CategoryScreen(onShowToast = { toastMessage = it }) }
-                        2 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { LiveScreenContent(onShowToast = { toastMessage = it }) }
-                        3 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                            ModernSettingsScreen(
-                                themeManager = themeManager,
-                                currentSource = currentSource,
-                                onOpenSourceDialog = { showSourceDialog = true },
-                                onShowToast = { toastMessage = it }
+                                }
                             )
                         }
-                        4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { ProfileScreen(onShowToast = { toastMessage = it }) }
+                    ) { paddingValues ->
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(bottom = paddingValues.calculateBottomPadding())
+                        ) { page ->
+                            when (page) {
+                                0 -> {
+                                    Column(modifier = Modifier.fillMaxSize()) {
+                                        OptimizedTopBar(
+                                            sourceName = selectedSite?.name ?: "点击配置订阅",
+                                            onSearchClick = {
+                                                coroutineScope.launch { pagerState.animateScrollToPage(1) }
+                                            },
+                                            onSourceClick = { showSourceDialog = true }
+                                        )
+                                        HomeGridContent(
+                                            onMovieClick = { detail ->
+                                                TvBoxRepository.selectedDetail = detail
+                                                onNavigateToDetail(detail.id)
+                                            },
+                                            onConfigureSubscription = { showSourceDialog = true },
+                                            onShowToast = { toastMessage = it },
+                                            sharedTransitionScope = sharedTransitionScope,
+                                            animatedVisibilityScope = animatedVisibilityScope
+                                        )
+                                    }
+                                }
+                                1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                    CategoryScreen(
+                                        onMovieClick = { detail ->
+                                            TvBoxRepository.selectedDetail = detail
+                                            onNavigateToDetail(detail.id)
+                                        },
+                                        onShowToast = { toastMessage = it },
+                                        sharedTransitionScope = sharedTransitionScope,
+                                        animatedVisibilityScope = animatedVisibilityScope
+                                    )
+                                }
+                                2 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                    LiveScreenContent(
+                                        onConfigureSubscription = { showSourceDialog = true },
+                                        onShowToast = { toastMessage = it }
+                                    )
+                                }
+                                3 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                    ModernSettingsScreen(
+                                        themeManager = themeManager,
+                                        selectedSite = selectedSite,
+                                        onOpenSourceDialog = { showSourceDialog = true },
+                                        onShowToast = { toastMessage = it }
+                                    )
+                                }
+                                4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { ProfileScreen(onShowToast = { toastMessage = it }) }
+                            }
+                        }
                     }
                 }
             }
@@ -156,68 +239,11 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
     }
 }
 
-    // 切换数据源弹窗 (Material 3 对话框)
+    // TVBox 真实订阅与源配置弹窗
     if (showSourceDialog) {
-        AlertDialog(
-            onDismissRequest = { showSourceDialog = false },
-            title = {
-                Text(
-                    text = "切换订阅数据源",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "重客户端直连架构：纯文本解析，媒体流由手机直连嗅探",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    )
-                    MockDataProvider.dataSources.forEach { source ->
-                        val isSelected = source.id == currentSource.id
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    currentSource = source
-                                    showSourceDialog = false
-                                    toastMessage = "已切换至：${source.name}"
-                                }
-                                .padding(vertical = 10.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = isSelected,
-                                onClick = null,
-                                colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = source.name,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    fontSize = 15.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                )
-                                Text(
-                                    text = source.description,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSourceDialog = false }) {
-                    Text("取消", color = MaterialTheme.colorScheme.primary)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surface
+        TvBoxSubscriptionDialog(
+            onDismiss = { showSourceDialog = false },
+            onShowToast = { toastMessage = it }
         )
     }
 }
@@ -227,8 +253,9 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
 // -------------------------------------------------------------------------------------
 @Composable
 fun OptimizedTopBar(
-    sourceName: String = "暴风片库",
-    onSearchClick: () -> Unit = {}
+    sourceName: String = "点击配置订阅",
+    onSearchClick: () -> Unit = {},
+    onSourceClick: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
@@ -238,12 +265,27 @@ fun OptimizedTopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = sourceName,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { onSourceClick() }
+                .padding(vertical = 4.dp, horizontal = 4.dp)
+        ) {
+            Text(
+                text = sourceName,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Icon(
+                imageVector = Icons.Default.ArrowDropDown,
+                contentDescription = "切换站源",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+        }
 
         IconButton(
             onClick = { onSearchClick() },
@@ -259,82 +301,152 @@ fun OptimizedTopBar(
 }
 
 // -------------------------------------------------------------------------------------
-// 2. 首页精选点播 (根据选中的数据源动态切换电影列表，全局 StandardPullToRefreshBox 物理阻尼与位移动画)
+// 2. 首页精选点播 (全面接入 TVBox 真实采集源数据流，彻底移除所有 Mock 假数据)
 // -------------------------------------------------------------------------------------
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun HomeGridContent(
-    currentSourceId: String = "bf",
-    onShowToast: (String) -> Unit = {}
+    onMovieClick: (VideoDetailData) -> Unit = {},
+    onConfigureSubscription: () -> Unit = {},
+    onShowToast: (String) -> Unit = {},
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null
 ) {
-    val baseList = if (currentSourceId == "hn") MockDataProvider.hnVodList else MockDataProvider.homeVodList
-    var currentList by remember(currentSourceId) { mutableStateOf(baseList) }
-    var isRefreshing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val realVodList by TvBoxRepository.realVodList.collectAsState()
+    val selectedSite by TvBoxRepository.selectedSite.collectAsState()
+    val isRepoLoading by TvBoxRepository.isLoading.collectAsState()
+    var isRefreshing by remember { mutableStateOf(false) }
 
     StandardPullToRefreshBox(
-        isRefreshing = isRefreshing,
+        isRefreshing = isRefreshing || (isRepoLoading && realVodList.isEmpty()),
         onRefresh = {
+            if (selectedSite == null) {
+                onConfigureSubscription()
+                return@StandardPullToRefreshBox
+            }
             coroutineScope.launch {
                 isRefreshing = true
-                delay(1200)
-                val newId = System.currentTimeMillis().toString()
-                val newCandidates = listOf(
-                    Pair("黑神话：悟空 剧场版", "https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg"),
-                    Pair("异形：夺命舰", "https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg"),
-                    Pair("死侍与金钢狼", "https://image.tmdb.org/t/p/w500/8Vt6mWEReuy4Of61Lnj5Xj704m8.jpg"),
-                    Pair("边水往事 结局篇", "https://image.tmdb.org/t/p/w500/7V0Ebks0GgpKvQ7QbLAIdX5dos4.jpg")
-                )
-                val chosen = newCandidates.random()
-                val newAddedMovie = MockMovie(
-                    id = newId,
-                    title = chosen.first,
-                    remarks = "4K 极清首发",
-                    category = "电影",
-                    rating = "9.5",
-                    posterUrl = chosen.second
-                )
-                // 在顶部插入新数据，下方旧数据伴随位移动画丝滑推下
-                currentList = listOf(newAddedMovie) + currentList
+                val result = TvBoxRepository.fetchRealVodData(selectedSite!!)
                 isRefreshing = false
-                onShowToast("已为您刷新并置顶最新影片：《${newAddedMovie.title}》")
+                if (result.isSuccess) {
+                    onShowToast("已为您从【${selectedSite?.name}】刷新最新影片")
+                } else {
+                    onShowToast("刷新失败: ${result.exceptionOrNull()?.message}")
+                }
             }
         },
         modifier = Modifier.fillMaxSize()
     ) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                end = 16.dp,
-                top = 24.dp, // 顶部预留出指示器的高度空间，避免遮挡第一排海报
-                bottom = 96.dp // 底部留白，防 BottomNavigationBar 遮挡
-            ),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(
-                items = currentList,
-                key = { movie -> movie.id },
-                contentType = { "vod_poster_card" }
-            ) { movie ->
-                StandardPosterCard(
-                    title = movie.title,
-                    subtitle = movie.remarks,
-                    score = movie.rating,
-                    posterUrl = movie.posterUrl,
-                    modifier = animateItem(
-                        fadeInSpec = androidx.compose.animation.core.tween(durationMillis = 400),
-                        placementSpec = androidx.compose.animation.core.spring(
-                            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                            stiffness = androidx.compose.animation.core.Spring.StiffnessLow
+        if (realVodList.isEmpty()) {
+            if (isRepoLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(44.dp)
                         )
-                    ),
-                    onClick = {
-                        onShowToast("点击播放: ${movie.title}")
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = if (selectedSite != null) "正在加载【${selectedSite?.name}】片库..." else "正在连接订阅...",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDownload,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = if (selectedSite == null) "暂未配置 TVBox 订阅源" else "【${selectedSite?.name}】暂无视频数据",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (selectedSite == null) "请点击下方按钮添加订阅地址以加载真实影视" else "可尝试下拉刷新或切换至其他可用站点",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Button(
+                            onClick = {
+                                if (selectedSite == null) {
+                                    onConfigureSubscription()
+                                } else {
+                                    coroutineScope.launch {
+                                        TvBoxRepository.fetchRealVodData(selectedSite!!)
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(text = if (selectedSite == null) "配置 TVBox 订阅" else "重新刷新")
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 24.dp,
+                    bottom = 96.dp
+                ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(
+                    items = realVodList,
+                    key = { movie -> movie.id },
+                    contentType = { "vod_poster_card" }
+                ) { movie ->
+                    StandardPosterCard(
+                        title = movie.title,
+                        subtitle = movie.subtitle,
+                        score = movie.rating,
+                        posterUrl = movie.posterUrl,
+                        movieId = movie.id,
+                        sharedTransitionScope = sharedTransitionScope,
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        modifier = animateItem(
+                            fadeInSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                            placementSpec = androidx.compose.animation.core.spring(
+                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
+                                stiffness = androidx.compose.animation.core.Spring.StiffnessLow
+                            )
+                        ),
+                        onClick = {
+                            onMovieClick(movie)
+                        }
+                    )
+                }
             }
         }
     }
@@ -345,145 +457,57 @@ fun HomeGridContent(
 // -------------------------------------------------------------------------------------
 @Composable
 fun LiveScreenContent(
+    onConfigureSubscription: () -> Unit = {},
     onShowToast: (String) -> Unit = {}
 ) {
-    var selectedChannelId by remember { mutableStateOf("1") }
-    val currentChannel = MockDataProvider.liveChannels.find { it.id == selectedChannelId } 
-        ?: MockDataProvider.liveChannels.first()
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp)
-                .aspectRatio(1.77f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.Black)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Icon(
+                imageVector = Icons.Default.LiveTv,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(56.dp)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "暂无电视频道直播源",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "可在 TVBox 订阅中配置包含直播频道的站点或导入直播列表",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            Button(
+                onClick = onConfigureSubscription,
+                shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.PlayCircleFilled,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(48.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "正在直播：${currentChannel.name}",
-                    color = Color.White,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "当前节目: ${currentChannel.currentProgram}",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 12.sp
-                )
-            }
-
-            Surface(
-                color = Color(0xFFEF4444).copy(alpha = 0.85f),
-                shape = RoundedCornerShape(4.dp),
-                modifier = Modifier
-                    .padding(12.dp)
-                    .align(Alignment.TopStart)
-            ) {
-                Text(
-                    text = "LIVE",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-        }
-
-        Text(
-            text = "全部频道与节目单",
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
-        )
-
-        LazyColumn(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(
-                items = MockDataProvider.liveChannels,
-                key = { channel -> channel.id }
-            ) { channel ->
-                val isPlaying = channel.id == selectedChannelId
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isPlaying) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            selectedChannelId = channel.id
-                            onShowToast("换台至：${channel.name}")
-                        }
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.VolumeUp else Icons.Default.Tv,
-                                contentDescription = null,
-                                tint = if (isPlaying) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = channel.name,
-                                color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "正在播: ${channel.currentProgram} | 稍后: ${channel.nextProgram}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
+                Text(text = "配置订阅源")
             }
         }
     }
 }
 
 // -------------------------------------------------------------------------------------
-// 5. 设置页面与主题模式切换 (集成数据源订阅、ThemeManager、HSV 色盘与 DataStore 持久化)
+// 5. 设置页面与主题模式切换 (集成 TVBox 订阅、ThemeManager、HSV 色盘与 DataStore 持久化)
 // -------------------------------------------------------------------------------------
 @Composable
 fun ModernSettingsScreen(
     themeManager: ThemeManager,
-    currentSource: MockDataSource,
+    selectedSite: TvBoxSite?,
     onOpenSourceDialog: () -> Unit,
     onShowToast: (String) -> Unit = {}
 ) {
@@ -526,13 +550,13 @@ fun ModernSettingsScreen(
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "订阅数据源",
+                                text = "TVBox 订阅与站源配置",
                                 color = MaterialTheme.colorScheme.onSurface,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "当前: ${currentSource.name} (${currentSource.description})",
+                                text = if (selectedSite != null) "当前激活: ${selectedSite.name} · 点击配置订阅或切换" else "暂未添加 TVBox 订阅 · 点击配置",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp
                             )

@@ -1,5 +1,8 @@
 package com.damon.mobilebox.ui.components
 
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -19,23 +22,30 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 
 /**
  * 全局统一的标准海报组件 (可在首页、搜索、分类等所有页面复用)
- * 严格按照 MD3 规范：2:3 黄金比例、右上角 6dp 评分暗底角标、渐入动效、自动跟随主题深浅色
- * 支持硬件传感器驱动的多层 3D 视差（外框倾斜 + 内图开窗景深位移 + 表面流光 + 角标悬浮）
+ * 严格按照 0.7f 黄金竖版比例，与详情页 1:1 严格对齐，彻底消除飞行形变
+ * 严格控制 Modifier 链顺序：sharedBounds 位于 clip 之前，使用 8dp 圆角
+ * 禁用 Coil crossfade 杜绝动画闪烁，结合硬件传感器 3D 视差
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun StandardPosterCard(
     title: String,
     subtitle: String,
     score: String = "",
     posterUrl: String = "",
+    movieId: String? = null,
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {}
 ) {
@@ -51,19 +61,20 @@ fun StandardPosterCard(
 
     val parallax = LocalParallaxAngles.current
     val isParallaxEnabled = LocalParallaxEnabled.current
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
             .graphicsLayer { alpha = alphaAnim }
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .clickable { onClick() }
     ) {
-        // 海报图片外部 3D 视差透视容器
+        // 海报图片外部 3D 视差透视容器：强制统一 aspectRatio(0.7f)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.66f) // 严格约束 2:3 黄金海报比例
+                .aspectRatio(0.7f) // 核心修复2：统一比例为 0.7f
                 .graphicsLayer {
                     if (isParallaxEnabled) {
                         rotationY = parallax.roll * 14f   // 左右倾斜 3D 旋转 (±14°)
@@ -71,8 +82,8 @@ fun StandardPosterCard(
                         cameraDistance = 14f * density    // 强化 3D 视差相机景深焦距
                     }
                 }
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant) // 使用主题的次级表面色作为占位底色
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             // 内层图片容器：通过反向平移产生强烈的“开窗”景深视差
             Box(
@@ -80,7 +91,6 @@ fun StandardPosterCard(
                     .fillMaxSize()
                     .graphicsLayer {
                         if (isParallaxEnabled) {
-                            // 内层反向微移与小幅放大，消除黑边并营造立体景深
                             translationX = -parallax.roll * 14.dp.toPx()
                             translationY = -parallax.pitch * 14.dp.toPx()
                             scaleX = 1.12f
@@ -89,11 +99,36 @@ fun StandardPosterCard(
                     }
             ) {
                 if (posterUrl.isNotEmpty()) {
+                    // 核心修复3：sharedBounds 必须放在 clip 之前！
+                    val imageModifier = Modifier
+                        .fillMaxSize()
+                        .let { m ->
+                            if (sharedTransitionScope != null && animatedVisibilityScope != null && !movieId.isNullOrEmpty()) {
+                                with(sharedTransitionScope) {
+                                    m.sharedBounds(
+                                        sharedContentState = rememberSharedContentState(key = "poster_$movieId"),
+                                        animatedVisibilityScope = animatedVisibilityScope,
+                                        resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(),
+                                        // 动画期间保持与静态态相同的圆角 (8dp)
+                                        clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(8.dp))
+                                    )
+                                }
+                            } else {
+                                m
+                            }
+                        }
+                        .clip(RoundedCornerShape(8.dp)) // 静态圆角裁剪放在最后
+
                     AsyncImage(
-                        model = posterUrl,
+                        model = remember(posterUrl) {
+                            ImageRequest.Builder(context)
+                                .data(posterUrl)
+                                .crossfade(false)
+                                .build()
+                        },
                         contentDescription = title,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = imageModifier
                     )
                 } else {
                     Icon(
@@ -115,25 +150,24 @@ fun StandardPosterCard(
                         .padding(6.dp)
                         .graphicsLayer {
                             if (isParallaxEnabled) {
-                                // 评分角标正向微凸悬浮，构成前后 3 层空间景深
                                 translationX = parallax.roll * 6.dp.toPx()
                                 translationY = parallax.pitch * 6.dp.toPx()
                             }
                         }
                         .clip(RoundedCornerShape(6.dp))
-                        .background(Color.Black.copy(alpha = 0.75f)) // 恒定半透明黑底，防文字受背景图干扰
+                        .background(Color.Black.copy(alpha = 0.75f))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = score,
-                        color = Color.White, // 评分始终保持高亮白色
+                        color = Color.White,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            // 陀螺仪 3D 动态流光反射层 (高对比度 Specular Sheen 反光)
+            // 陀螺仪 3D 动态流光反射层
             if (isParallaxEnabled) {
                 Box(
                     modifier = Modifier
@@ -144,7 +178,7 @@ fun StandardPosterCard(
                             drawRect(
                                 brush = Brush.radialGradient(
                                     colors = listOf(
-                                        Color.White.copy(alpha = 0.35f), // 高对比白光高光
+                                        Color.White.copy(alpha = 0.35f),
                                         Color.Transparent
                                     ),
                                     center = Offset(highlightX, highlightY),
@@ -155,9 +189,9 @@ fun StandardPosterCard(
                 )
             }
         }
-        
+
         Spacer(modifier = Modifier.height(10.dp))
-        
+
         // 标题排版
         Text(
             text = title,

@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.remember
 import com.damon.mobilebox.core.device.DeviceProfileProvider
+import com.damon.mobilebox.ui.navigation.AppNavigation
 import com.damon.mobilebox.ui.theme.ThemeManager
 import com.damon.mobilebox.ui.theme.TvBoxTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -13,7 +14,7 @@ import javax.inject.Inject
 
 /**
  * 移动端主界面
- * 基于 Jetpack Compose + HorizontalPager + MD3 柔和色彩体系
+ * 基于 Jetpack Compose + SharedTransitionLayout 共享元素转场 + MD3 柔和色彩体系
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -29,7 +30,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeManager = remember { ThemeManager(applicationContext) }
             TvBoxTheme(themeManager = themeManager) {
-                AnimatedMainScreen(themeManager = themeManager)
+                AppNavigation(themeManager = themeManager)
             }
         }
     }
