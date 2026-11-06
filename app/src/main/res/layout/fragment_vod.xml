@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0F172A"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- 手机端顶部栏：站点源选择器与搜索入口 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipSourceSelect"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="切换数据源：暴风片库"
+            android:textColor="#38BDF8"
+            app:chipBackgroundColor="#1E293B"
+            app:chipIcon="@drawable/ic_nav_vod"
+            app:chipIconTint="#38BDF8"
+            app:chipStrokeColor="#334155" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <ImageView
+            android:id="@+id/ivQuickSearch"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="#1E293B"
+            android:padding="8dp"
+            android:src="@drawable/ic_nav_search"
+            app:tint="#E2E8F0" />
+    </LinearLayout>
+
+    <!-- 演示用内容卡片 -->
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        app:cardBackgroundColor="#1E293B"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="2dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🎬 精选点播中心 (VOD Home)"
+                android:textColor="#38BDF8"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="已脱离 TV Leanback 横向网格限制，下一小步（Step 2.2）将在此处挂载手机双列瀑布流海报卡片与下拉刷新。"
+                android:textColor="#94A3B8"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+</LinearLayout>

@@ -19,8 +19,8 @@
 ---
 
 ## 阶段二：架构升级与交互重绘 (Architecture & UI Rebuild)
-- [ ] **Step 2.1【底部四栏导航】**：Compose Navigation 移动端主框架
-  - *验证方法*：手机底部清晰展示【精选】、【直播】、【搜索】、【我的】四个 Tab，单手轻触平滑切换。
+- [x] **Step 2.1【底部四栏导航与现代化 UI 体系】**：Compose HorizontalPager + MD3 柔和色彩 + Material You 动态取色
+  - *验证方法*：手机底部清晰展示【首页】、【分类】、【直播】、【设置】四个 Tab，支持左右横滑手势平滑切换；支持深浅色与动态壁纸取色，状态栏文字自适应；分类双层级 FilterChip 防误触；全局统一 2:3 黄金比例 StandardPosterCard 与真实网络海报；极简自适应 ModernToastMessage 提示弹窗已真机验收通过。
 - [ ] **Step 2.2【点播瀑布流海报】**：双列触控网格 + 下拉刷新
   - *验证方法*：手指在屏幕上下滑动，流畅触控滚动；顶部下拉触发 Material 3 弹性刷新水滴动效。
 - [ ] **Step 2.3【挖孔屏与沉浸式避让】**：Edge-to-Edge 全面屏与手势条适配

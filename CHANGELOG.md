@@ -4,6 +4,53 @@
 
 ---
 
+## [2026-11-06] Step 2.1 完成：底部四栏导航与现代化 MD3 UI 体系全量重构
+
+### 👨‍💻 操作人员 / Agent
+- **角色**：Senior Android Architect & Kotlin Specialist (Antigravity Agent)
+- **任务目标**：构建专属于移动端单手操作的 Material Design 3 界面体系，实现多数据源无缝切换、深浅双色板与 Android 12+ Material You 动态壁纸取色、透明沉浸状态栏、双层防误触分类筛选、全局 2:3 黄金比例海报组件与真实网络海报加载，以及极简自适应提示组件。
+
+### 📝 核心改动文件明细
+1. `app/src/main/java/com/damon/mobilebox/ui/theme/AppTheme.kt`：
+   - 引入 DataStore 偏好持久化（`ThemeManager`），支持“跟随系统 / 浅色模式 / 深色模式”三态存储。
+   - 实现 Android 12+ `Build.VERSION_CODES.S` Material You 动态壁纸色彩提取（`dynamicLightColorScheme` / `dynamicDarkColorScheme`），并对低版本设备进行平滑回退。
+   - 注入 `SideEffect` 与 `WindowCompat.getInsetsController`，实现物理级全透明状态栏/导航栏，并根据深浅色模式智能反转状态栏与导航栏图标黑白颜色。
+2. `app/src/main/java/com/damon/mobilebox/ui/components/StandardPosterCard.kt`：
+   - 全局抽象统一海报组件，采用 `Modifier.aspectRatio(0.66f)` 强制约束 2:3 黄金比例。
+   - 集成 `io.coil-kt:coil-compose:2.6.0` 异步图片加载管道，带次级表面占位底色。
+   - 右上角绝对定位高对比度评分角标（`6.dp` 圆角 + 半透明黑底 + 白色文字）。
+3. `app/src/main/java/com/damon/mobilebox/ui/category/CategoryScreen.kt`：
+   - 全面引入 Material 3 官方 `FilterChip` 组件，彻底解决横向滑动误判为点击的交互痛点。
+   - 实现双层独立状态管理（第一排主分类药丸高对比度标签 + 第二排次分类排序轻量边框芯片）。
+   - 底部保留 `96.dp` 安全垫，彻底消除与底部导航栏的遮挡。
+4. `app/src/main/java/com/damon/mobilebox/ui/components/ModernToastMessage.kt`：
+   - 打造极简无图标 MD3 浮层气泡，使用 `inverseSurface` 与 `inverseOnSurface` 规范反转色系，彻底告别深色模式下的刺眼白色。
+   - 全圆角药丸布局（`RoundedCornerShape(50)`），水平加大留白至 `24.dp`。
+5. `app/src/main/java/com/damon/mobilebox/ui/main/AnimatedMainScreen.kt`：
+   - 顶部 TopBar 语义化升级：弃用汉堡菜单，换用 `Icons.Default.Storage` 存储图标与右侧下拉箭头，搭配微弱圆角背景。
+   - 集成 4 页面 `HorizontalPager`，手势滑动与底部导航栏药丸指示器双向无缝联动。
+   - 浮动集成 `ModernToastMessage` 提示气泡，淡入上浮动效与 2 秒自动退出。
+6. `app/src/main/java/com/damon/mobilebox/ui/main/MockDataProvider.kt`：
+   - 注入 5 大数据源（暴风片库、非凡影视、红牛片库、量子秒播、自建LiveHub）。
+   - 为电影、电视剧、动漫等代表作注入真实高清网络海报直链（《沙丘2》《奥本海默》《阿凡达2》《星际穿越》《龙之家族2》《鬼灭之刃》《芙莉莲》《疾速追杀4》等）。
+7. `gradle/libs.versions.toml` & `app/build.gradle.kts`：
+   - 增加 `coil = "2.6.0"` 及 `libs.coil.compose` 依赖。
+
+### 📱 真机实测验证状态
+- **测试设备**：`CPH2723` (Android 17, arm64-v8a)
+- **编译状态**：Gradle `assembleDebug` 成功，APK 体积 24.3 MB。
+- **真机运行现象**：
+  - 手机上左右横向滑动页面连贯切换四大 Tab；
+  - 点击左上角存储图标顺畅呼出数据源切换弹窗，切换后底部弹出柔和深色自适应气泡；
+  - 状态栏图标在深浅主题切换时精准反色；
+  - 分类页快速滑动顶部分类不误触，点击子分类即时联动排序，海报图片清晰渲染。
+- **用户验收结果**：用户实机体验并明确确认“**验证通过**”。
+
+### 🌐 Git 提交与同步
+- **远程分支**：`origin/main`
+
+---
+
 ## [2026-11-06] 重构工程初始化与文档体系基线建立
 
 ### 👨‍💻 操作人员 / Agent

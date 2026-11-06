@@ -1,128 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0F172A"
-    android:padding="24dp">
+    android:background="#0F172A">
 
-    <!-- 顶部状态卡片 -->
-    <com.google.android.material.card.MaterialCardView
-        android:id="@+id/cardHeader"
+    <!-- 主内容呈现区：由 Jetpack Navigation 托管切换四个 Fragment -->
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/nav_host_fragment"
+        android:name="androidx.navigation.fragment.NavHostFragment"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="32dp"
-        app:cardBackgroundColor="#1E293B"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="4dp"
-        app:layout_constraintTop_toTopOf="parent">
+        android:layout_height="0dp"
+        app:defaultNavHost="true"
+        app:layout_constraintBottom_toTopOf="@id/bottom_nav"
+        app:layout_constraintTop_toTopOf="parent"
+        app:navGraph="@navigation/nav_graph" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="MobileBox"
-                android:textColor="#38BDF8"
-                android:textSize="26sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="Step 1.2 · Version Catalog &amp; Hilt 注入验证"
-                android:textColor="#94A3B8"
-                android:textSize="14sp" />
-        </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
-
-    <!-- 核心状态验证列表 -->
-    <com.google.android.material.card.MaterialCardView
-        android:id="@+id/cardStatus"
+    <!-- 移动端专属：Material 3 底部四栏触控导航 (点播 / 直播 / 搜索 / 我的) -->
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottom_nav"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        app:cardBackgroundColor="#1E293B"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="2dp"
-        app:layout_constraintTop_toBottomOf="@id/cardHeader">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <TextView
-                android:id="@+id/tvCheck1"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="✅ Gradle Version Catalog (libs.versions.toml) 生效"
-                android:textColor="#E2E8F0"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvCheck2"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="✅ KSP 符号处理器配置成功"
-                android:textColor="#E2E8F0"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvCheck3"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="✅ Hilt 顶层注入容器 (@HiltAndroidApp) 启动"
-                android:textColor="#E2E8F0"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvCheck4"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="✅ @AndroidEntryPoint 属性注入成功"
-                android:textColor="#34D399"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:layout_marginVertical="14dp"
-                android:background="#334155" />
-
-            <TextView
-                android:id="@+id/tvDeviceInfo"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="由 Hilt 注入的服务：正在读取..."
-                android:textColor="#38BDF8"
-                android:textSize="13sp" />
-        </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
-
-    <!-- 交互验证按钮 -->
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnVerify"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:layout_marginBottom="32dp"
-        android:text="验证 Hilt 注入实例 (Verify Hilt)"
-        android:textColor="#0F172A"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        app:backgroundTint="#34D399"
-        app:cornerRadius="14dp"
-        app:layout_constraintBottom_toBottomOf="parent" />
+        android:layout_height="64dp"
+        android:background="#1E293B"
+        app:elevation="8dp"
+        app:itemIconSize="22dp"
+        app:itemIconTint="@color/bottom_nav_color_selector"
+        app:itemTextColor="@color/bottom_nav_color_selector"
+        app:labelVisibilityMode="labeled"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:menu="@menu/bottom_nav_menu" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

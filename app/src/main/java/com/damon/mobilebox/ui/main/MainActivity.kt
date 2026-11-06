@@ -1,46 +1,36 @@
 package com.damon.mobilebox.ui.main
 
 import android.os.Bundle
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.remember
 import com.damon.mobilebox.core.device.DeviceProfileProvider
-import com.damon.mobilebox.databinding.ActivityMainBinding
+import com.damon.mobilebox.ui.theme.ThemeManager
+import com.damon.mobilebox.ui.theme.TvBoxTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
 /**
- * 主界面入口
- * 使用 @AndroidEntryPoint 标记，由 Hilt 自动注入所需依赖
+ * 移动端主界面
+ * 基于 Jetpack Compose + HorizontalPager + MD3 柔和色彩体系
  */
 @AndroidEntryPoint
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
 
-    private lateinit var binding: ActivityMainBinding
-
-    // 核心注入：由 Hilt 依赖注入容器自动提供单例实例，无需 new
     @Inject
     lateinit var deviceProfileProvider: DeviceProfileProvider
 
-    private var clickCount = 0
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        // 开启系统级边到边沉浸式 (Edge-to-Edge)
+        enableEdgeToEdge()
 
-        // 通过被注入的 DeviceProfileProvider 获取设备硬件摘要
-        val summary = deviceProfileProvider.getDeviceSummary()
-        binding.tvDeviceInfo.text = "Hilt 注入就绪: $summary"
-
-        binding.btnVerify.setOnClickListener {
-            clickCount++
-            val isReady = deviceProfileProvider.isHiltReady()
-            Toast.makeText(
-                this,
-                "🎉 Hilt 依赖注入验证通过！状态正常: $isReady (点击: $clickCount)",
-                Toast.LENGTH_SHORT
-            ).show()
-            binding.btnVerify.text = "Hilt 容器运转正常 (点击: $clickCount 次)"
+        setContent {
+            val themeManager = remember { ThemeManager(applicationContext) }
+            TvBoxTheme(themeManager = themeManager) {
+                AnimatedMainScreen(themeManager = themeManager)
+            }
         }
     }
 }

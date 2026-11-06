@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/navigation_vod">
+
+    <fragment
+        android:id="@+id/navigation_vod"
+        android:name="com.damon.mobilebox.ui.vod.VodFragment"
+        android:label="精选点播"
+        tools:layout="@layout/fragment_vod" />
+
+    <fragment
+        android:id="@+id/navigation_live"
+        android:name="com.damon.mobilebox.ui.live.LiveFragment"
+        android:label="电视直播"
+        tools:layout="@layout/fragment_live" />
+
+    <fragment
+        android:id="@+id/navigation_search"
+        android:name="com.damon.mobilebox.ui.search.SearchFragment"
+        android:label="全网搜索"
+        tools:layout="@layout/fragment_search" />
+
+    <fragment
+        android:id="@+id/navigation_mine"
+        android:name="com.damon.mobilebox.ui.mine.MineFragment"
+        android:label="我的设置"
+        tools:layout="@layout/fragment_mine" />
+
+</navigation>
