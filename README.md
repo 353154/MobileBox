@@ -1,5 +1,9 @@
 # MobileBox 📱
 
+<p align="center">
+  <strong>简体中文</strong> | <a href="README_EN.md">English</a>
+</p>
+
 > 一款基于现代 Android 架构打造的高性能流媒体移动客户端。遵循 **Clean Architecture (整洁架构)** 规范，采用 **Jetpack Compose** 与 **Material Design 3** 构建。
 
 ---
