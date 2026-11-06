@@ -1,5 +1,9 @@
 # MobileBox: 5 大阶段 · 15 个可真机验证的小步计划 (Micro-Steps Roadmap)
 
+> **源工程参考**：[sayxiaoyan/Box](https://github.com/sayxiaoyan/Box) (TVBox 电视端开源项目)  
+> **重构目标**：重新构建专属于个人安卓手机的原生触控应用 [353154/MobileBox](https://github.com/353154/MobileBox)（非简单 Fork，独立重写）  
+> **实机环境**：已连接手机 `CPH2723` (Android 17, arm64-v8a)
+
 本文档将五大重构阶段拆解为 **15 个独立交付、步步可验证的小步**。  
 每个小步完成后，系统均会自动编译 APK 推送至您的手机 `CPH2723`，您只需拿起手机按照“验证指南”进行验收。
 

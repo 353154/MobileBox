@@ -1,7 +1,22 @@
 # MobileBox: Clean Architecture 架构设计全景说明书
 
+> **重构源项目 (Upstream)**：[https://github.com/sayxiaoyan/Box](https://github.com/sayxiaoyan/Box) (TVBox 电视端工程)  
+> **目标工程 (Target)**：[https://github.com/353154/MobileBox](https://github.com/353154/MobileBox) (原生 Android 手机端独立重写应用)  
+> **重构核心目标**：针对个人安卓手机（当前调试设备：`CPH2723`, Android 17）彻底剥离遥控器与电视限制，复用其成熟的 Spider 爬虫与数据源解析逻辑，重写为遵循 Clean Architecture 与纯触控体验的现代移动端应用。  
 > **文档状态**：已冻结基线，处于分阶段执行中  
 > **文档目标**：为本项目从 TVBox（电视版）重构为原生 Android 移动端（手机/折叠屏）提供顶层设计依据，保证后续任何开发者或 Agent 能够无缝接手。
+
+---
+
+## 0. 重构渊源与项目溯源 (Source Project Lineage)
+
+| 属性 | 源项目 (Source TV Project) | 本重构项目 (MobileBox App) |
+| :--- | :--- | :--- |
+| **开源地址** | `https://github.com/sayxiaoyan/Box` | `https://github.com/353154/MobileBox` |
+| **目标平台** | Android TV / 机顶盒 / 智能投影仪 | Android 手机 / 折叠屏 (原生移动设备) |
+| **交互形态** | 遥控器 D-Pad 方向键、按键焦点框 | 全电容触控、边缘滑动手势、刘海挖孔屏沉浸避让 |
+| **重构方式** | **并非简单 Fork** | **全新建立干净工程，复用核心逻辑，彻底重写 UI/架构** |
+| **当前调试机型** | 智能电视 | 用户个人安卓手机：OPPO/一加 `CPH2723` (Android 17) |
 
 ---
 

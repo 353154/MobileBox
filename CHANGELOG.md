@@ -131,6 +131,20 @@
 4. **Git 与 GitHub 同步**：
    - 严格遵循协作铁律，验证完毕后立即提交并推送至 `origin/main`。
 
+---
+
+## [2026-11-06] 文档交接规范升级：明确源项目溯源与项目对照
+
+### 👨‍💻 操作人员 / Agent
+- **角色**：Senior Android Architect & Kotlin Specialist (Antigravity Agent)
+- **任务目标**：响应用户要求，在全部交接文档中显式标注重构源项目 `https://github.com/sayxiaoyan/Box` 与独立重构应用 `https://github.com/353154/MobileBox` 的对应关系。
+
+### 📝 核心改动
+1. **`README.md` 创建**：确立工程主页，详述本项目与原 TVBox 的渊源、重构差异对照表及文档导航。
+2. **`docs/ARCHITECTURE.md` 补充第 0 节**：显式声明源项目 URL、目标平台、重构逻辑及与原项目的架构映射。
+3. **`docs/REFACTOR_ROADMAP.md` 增加源项目标头**。
+
+
 
 
 
