@@ -1,49 +1,28 @@
 # MobileBox 📱
 
-> 基于 [sayxiaoyan/Box](https://github.com/sayxiaoyan/Box) (TVBox 电视版) 深度重构的原生 **Android 手机端应用 (Mobile App)**。  
-> **非简单 Fork**，而是遵循 **Clean Architecture (整洁架构)** 从零独立重写的现代化移动端工程。
+> 一款基于现代 Android 架构打造的高性能流媒体移动客户端。遵循 **Clean Architecture (整洁架构)** 规范，采用 **Jetpack Compose** 与 **Material Design 3** 构建。
 
 ---
 
-## 🎯 重构目标与渊源
+## ✨ 核心特性
 
-原开源项目 [sayxiaoyan/Box](https://github.com/sayxiaoyan/Box) 是一款针对智能电视与机顶盒设计的优秀播放器，但其在移动手机端存在严重水土不服：
-- 强制固定横屏，页面排版在手机上严重变形；
-- 强依赖电视遥控器 D-Pad 焦点按键 (`android:focusable`)，触控滑动粘滞甚至失效；
-- 播放器缺乏移动端手势（无法通过滑动屏幕调节亮度、音量与快进）；
-- 无手机挖孔刘海屏避让、无系统画中画悬浮窗、无原生生物识别安全锁。
-
-**MobileBox** 旨在**复用原项目经过数年沉淀的稳定 Spider 爬虫解析、多仓源协议与核心流媒体解码逻辑**，同时彻底剥离 TV Leanback 束缚，为个人安卓触屏手机量身打造极致的现代原生移动交互体验。
+- **现代响应式 UI**：基于 Jetpack Compose 与 Material Design 3，支持深浅双色主题、纯硬件加速极光渐变背景与动态主题色切换。
+- **单手移动交互体验**：底部四栏平滑导航、分类防误触双层过滤、物理阻尼下拉推移与回弹动效。
+- **全黄金比例海报**：统一 2:3 标准竖版海报规范，集成硬件陀螺仪驱动的 3D 景深悬浮透视与折射流光反射。
+- **多数据源直连秒播**：重客户端直连架构，支持动态订阅源切换与纯文本规则解析。
+- **现代化构建与依赖注入**：全面采用 Kotlin DSL、Gradle Version Catalog (`libs.versions.toml`) 与 Hilt 依赖注入。
 
 ---
 
-## 🏗️ 架构与组件替换对照
+## 🏗️ 架构概览
 
-| 重构维度 | 原 TVBox 实现 ([sayxiaoyan/Box](https://github.com/sayxiaoyan/Box)) | MobileBox 移动端重构实现 |
-| :--- | :--- | :--- |
-| **基础 UI** | `androidx.leanback` / 电视宽屏横向布局 | **Jetpack Compose / Material 3** / 手机底部四栏导航 |
-| **交互体系** | 遥控器 D-Pad 物理按键焦点 | **全电容触屏**、滑动边缘手势、双击暂停、长按菜单 |
-| **屏幕方向** | 强制横屏 (`landscape`) | **默认竖屏为主**，视频播放触发横竖屏与自动感应 |
-| **工程架构** | 单一模块，老旧 Groovy 构建 | **多模块 Clean Architecture**，**Kotlin DSL**，**Hilt** 依赖注入 |
-| **依赖管理** | 散落在各文件的硬编码版本字符串 | **Gradle Version Catalog (`libs.versions.toml`)** |
-| **多媒体** | 遥控菜单选集调音量 | **全屏双核 (IJK+MPV)** + 左亮右音手势 + **后台自动画中画 (PiP)** |
-| **安全机制** | 遥控器输入 4 位数字 PIN 码 | **AndroidX Biometric 硬件指纹 / 3D 面容隐私锁** |
+- **UI 呈现层 (Presentation)**：Jetpack Compose, Material 3, Navigation, Coil
+- **业务逻辑层 (Domain)**：Kotlin Coroutines & Flow, UseCases, Clean Architecture
+- **数据管理层 (Data)**：DataStore Preferences, Hilt DI, Retrofit / OkHttp
+- **多媒体内核 (Player)**：移动端全手势触控内核抽象与双核解码支持
 
 ---
 
-## 📚 详细文档导航
+## 📄 开源声明
 
-- 📖 **【必读】Agent 与开发者交接操作手册**：[docs/HANDOVER_GUIDE.md](docs/HANDOVER_GUIDE.md)  
-  *（包含：项目绝对工作目录、编译环境一键启动命令、交接文档编辑与维护 SOP、CHANGELOG 记录模板与 Git 推送流水线）*
-- 📐 **架构全景说明书**：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（含 Clean Architecture 拓扑、红线规则与持续交付铁律）
-- 🗺️ **15 个小步路线图与真机验收表**：[docs/REFACTOR_ROADMAP.md](docs/REFACTOR_ROADMAP.md)
-- 📜 **版本演进与操作审计日志**：[CHANGELOG.md](CHANGELOG.md)
-
----
-
-## 💻 核心工作目录与环境基线 (Quick Info)
-- **工程物理工作目录**：`/Users/damon/Documents/MobileBox`
-- **原版代码参考路径**：`/tmp/sayxiaoyan_Box` (对应 [sayxiaoyan/Box](https://github.com/sayxiaoyan/Box))
-- **当前联调真机**：OPPO / OnePlus `CPH2723` (Android 17, arm64-v8a, 设备 ID: `3B1F67EA9BBUHK76`)
-- **JDK 与 SDK**：JDK 17 (`~/.tools/jdk-17.0.21+9`) + Android SDK 34 (`~/Android/sdk`)
-
+本项目基于开源精神打造，仅供个人技术研究与移动端架构演进交流学习使用。

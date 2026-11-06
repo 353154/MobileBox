@@ -1,6 +1,7 @@
 package com.damon.mobilebox.ui.main
 
-import android.widget.Toast
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -48,6 +49,9 @@ import com.damon.mobilebox.ui.components.CupertinoSwitch
 import com.damon.mobilebox.ui.components.ColorPickerDialog
 import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
 import com.damon.mobilebox.ui.components.ModernBackgroundContainer
+import com.damon.mobilebox.ui.components.LocalParallaxAngles
+import com.damon.mobilebox.ui.components.LocalParallaxEnabled
+import com.damon.mobilebox.ui.components.rememberParallaxAngles
 import com.damon.mobilebox.ui.components.animateItem
 import com.damon.mobilebox.ui.category.CategoryScreen
 import kotlinx.coroutines.delay
@@ -67,6 +71,10 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
     // 全局自适应极简提示弹窗状态
     var toastMessage by remember { mutableStateOf<String?>(null) }
 
+    LaunchedEffect(Unit) {
+        toastMessage = "3D 视差海报与 24 部精选大片已就绪"
+    }
+
     LaunchedEffect(toastMessage) {
         if (toastMessage != null) {
             delay(2000)
@@ -74,9 +82,16 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
         }
     }
 
-    ModernBackgroundContainer {
-        Scaffold(
-            containerColor = Color.Transparent,
+    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
+    val parallaxAngles = rememberParallaxAngles(enabled = themeState.parallaxEnabled)
+
+    CompositionLocalProvider(
+        LocalParallaxAngles provides parallaxAngles,
+        LocalParallaxEnabled provides themeState.parallaxEnabled
+    ) {
+        ModernBackgroundContainer {
+            Scaffold(
+                containerColor = Color.Transparent,
             topBar = {
                 OptimizedTopBar(
                     sourceName = currentSource.name,
@@ -106,8 +121,8 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
                 when (page) {
                     0 -> HomeGridContent(currentSourceId = currentSource.id, onShowToast = { toastMessage = it })
                     1 -> CategoryScreen(onShowToast = { toastMessage = it })
-                    2 -> LiveScreenContent()
-                    3 -> ModernSettingsScreen(themeManager = themeManager)
+                    2 -> LiveScreenContent(onShowToast = { toastMessage = it })
+                    3 -> ModernSettingsScreen(themeManager = themeManager, onShowToast = { toastMessage = it })
                 }
             }
         }
@@ -126,6 +141,7 @@ fun AnimatedMainScreen(themeManager: ThemeManager) {
             }
         }
     }
+}
 
     // 切换数据源弹窗 (Material 3 对话框)
     if (showSourceDialog) {
@@ -343,11 +359,12 @@ fun HomeGridContent(
 // 4. 电视直播中心
 // -------------------------------------------------------------------------------------
 @Composable
-fun LiveScreenContent() {
-    var selectedChannelId by remember { mutableStateOf("cctv1") }
+fun LiveScreenContent(
+    onShowToast: (String) -> Unit = {}
+) {
+    var selectedChannelId by remember { mutableStateOf("1") }
     val currentChannel = MockDataProvider.liveChannels.find { it.id == selectedChannelId } 
         ?: MockDataProvider.liveChannels.first()
-    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -429,7 +446,7 @@ fun LiveScreenContent() {
                         .fillMaxWidth()
                         .clickable {
                             selectedChannelId = channel.id
-                            Toast.makeText(context, "换台至: ${channel.name}", Toast.LENGTH_SHORT).show()
+                            onShowToast("换台至：${channel.name}")
                         }
                 ) {
                     Row(
@@ -479,16 +496,19 @@ fun LiveScreenContent() {
 // 5. 设置页面与主题模式切换 (集成 ThemeManager、HSV 色盘与 DataStore 持久化)
 // -------------------------------------------------------------------------------------
 @Composable
-fun ModernSettingsScreen(themeManager: ThemeManager) {
+fun ModernSettingsScreen(
+    themeManager: ThemeManager,
+    onShowToast: (String) -> Unit = {}
+) {
     val coroutineScope = rememberCoroutineScope()
     val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
     val currentTheme = themeState.themePreference
     var showThemeDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
 
     var isMpvKernel by remember { mutableStateOf(true) }
     var isBiometricEnabled by remember { mutableStateOf(false) }
-    val context = LocalContext.current
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -589,6 +609,45 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                             modifier = Modifier.size(18.dp)
                         )
                     }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
+
+                    // 3. 陀螺仪 3D 视差海报开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ScreenRotation,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "陀螺仪 3D 视差海报",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (themeState.parallaxEnabled) "已开启手持 3D 悬浮与动态流光" else "已关闭硬件传感器视差",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        CupertinoSwitch(
+                            checked = themeState.parallaxEnabled,
+                            onCheckedChange = { isChecked ->
+                                coroutineScope.launch {
+                                    themeManager.saveParallaxEnabled(isChecked)
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -640,15 +699,18 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
                         Spacer(modifier = Modifier.width(16.dp))
                         CupertinoSwitch(
                             checked = isBiometricEnabled,
-                            onCheckedChange = { isBiometricEnabled = it }
+                            onCheckedChange = {
+                                isBiometricEnabled = it
+                                onShowToast(if (it) "已开启生物识别隐私锁" else "已关闭生物识别隐私锁")
+                            }
                         )
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
                     SettingRowItem(
                         icon = Icons.Default.Info,
                         title = "关于 MobileBox",
-                        subtitle = "版本 v1.0.0 (Clean Architecture 重构版)",
-                        onClick = { Toast.makeText(context, "MobileBox: 基于 TVBox 深度重构的移动应用", Toast.LENGTH_SHORT).show() }
+                        subtitle = null, // 移除版本号副标题，保持绝对清爽
+                        onClick = { showAboutDialog = true }
                     )
                 }
             }
@@ -711,6 +773,11 @@ fun ModernSettingsScreen(themeManager: ThemeManager) {
             }
         )
     }
+
+    // 独立的“关于 MobileBox”信息展示弹窗
+    if (showAboutDialog) {
+        AboutAppDialog(onDismiss = { showAboutDialog = false })
+    }
 }
 
 @Composable
@@ -728,7 +795,7 @@ fun SettingSectionHeader(title: String) {
 fun SettingRowItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     onClick: () -> Unit
 ) {
     Row(
@@ -742,10 +809,159 @@ fun SettingRowItem(
         Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            Text(text = subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            if (!subtitle.isNullOrEmpty()) {
+                Text(text = subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
         }
         Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
     }
+}
+
+/**
+ * 独立的关于信息展示弹窗 (AboutAppDialog)
+ * 采用 Material 3 标准弹窗规范，结构化展示版本、开发者、邮箱与开源项目地址
+ */
+@Composable
+fun AboutAppDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "关于 MobileBox",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // 1. 版本号
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "版本",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        modifier = Modifier.width(68.dp)
+                    )
+                    Text(
+                        text = "v1.0.0",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // 2. 开发者
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "开发者",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        modifier = Modifier.width(68.dp)
+                    )
+                    Text(
+                        text = "Damon",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // 3. 邮箱 (可点击调用系统邮箱应用)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            try {
+                                val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
+                                    data = Uri.parse("mailto:353154869@qq.com")
+                                }
+                                context.startActivity(emailIntent)
+                            } catch (e: Exception) {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "message/rfc822"
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("353154869@qq.com"))
+                                }
+                                context.startActivity(Intent.createChooser(sendIntent, "选择邮件客户端"))
+                            }
+                        }
+                        .padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "联系邮箱",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        modifier = Modifier.width(68.dp)
+                    )
+                    Text(
+                        text = "353154869@qq.com",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Email,
+                        contentDescription = "发送邮件",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // 4. GitHub 项目地址 (可点击调用浏览器跳转)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            try {
+                                val browserIntent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://github.com/353154/MobileBox")
+                                )
+                                context.startActivity(browserIntent)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                        .padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "项目地址",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        modifier = Modifier.width(68.dp)
+                    )
+                    Text(
+                        text = "GitHub / MobileBox",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = Icons.Default.OpenInNew,
+                        contentDescription = "访问 GitHub",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("确定", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface
+    )
 }
 
 // -------------------------------------------------------------------------------------

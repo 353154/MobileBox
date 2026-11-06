@@ -18,3 +18,8 @@ build/
 local.properties
 *.apk
 *.aab
+
+# 私密内部工程交接与路线文档（仅本地保留，禁止公开推送）
+/docs/
+/CHANGELOG.md
+.DS_Store

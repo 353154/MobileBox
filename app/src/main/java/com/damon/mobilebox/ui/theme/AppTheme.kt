@@ -15,6 +15,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -35,7 +36,8 @@ enum class ThemeColorMode(val value: Int, val title: String) {
 data class AppThemeState(
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val colorMode: ThemeColorMode = ThemeColorMode.DEFAULT,
-    val customColorInt: Int = 0xFF2F81F7.toInt() // 默认自定义起始颜色 (高饱和度亮蓝)
+    val customColorInt: Int = 0xFF2F81F7.toInt(), // 默认自定义起始颜色 (高饱和度亮蓝)
+    val parallaxEnabled: Boolean = true // 陀螺仪 3D 视差海报开关
 )
 
 class ThemeManager(private val context: Context) {
@@ -43,13 +45,15 @@ class ThemeManager(private val context: Context) {
         private val THEME_KEY = intPreferencesKey("theme_preference")
         private val COLOR_MODE_KEY = intPreferencesKey("color_mode")
         private val CUSTOM_COLOR_KEY = intPreferencesKey("custom_color")
+        private val PARALLAX_KEY = booleanPreferencesKey("parallax_enabled")
     }
 
     val appThemeStateFlow: Flow<AppThemeState> = context.dataStore.data.map { pref ->
         AppThemeState(
             themePreference = ThemePreference.entries.find { it.value == (pref[THEME_KEY] ?: 0) } ?: ThemePreference.SYSTEM,
             colorMode = ThemeColorMode.entries.find { it.value == (pref[COLOR_MODE_KEY] ?: 0) } ?: ThemeColorMode.DEFAULT,
-            customColorInt = pref[CUSTOM_COLOR_KEY] ?: 0xFF2F81F7.toInt()
+            customColorInt = pref[CUSTOM_COLOR_KEY] ?: 0xFF2F81F7.toInt(),
+            parallaxEnabled = pref[PARALLAX_KEY] ?: true
         )
     }
 
@@ -65,6 +69,10 @@ class ThemeManager(private val context: Context) {
             pref[COLOR_MODE_KEY] = mode.value
             customColor?.let { pref[CUSTOM_COLOR_KEY] = it }
         }
+    }
+
+    suspend fun saveParallaxEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[PARALLAX_KEY] = enabled }
     }
 }
 
