@@ -860,7 +860,12 @@ fun LiveScreenContent(
                             LaunchedEffect(channel.name, epgTemplate) {
                                 TvBoxRepository.ensureChannelEpg(channel)
                             }
-                            val isCurrent = channel.url == selectedChannel?.url
+                            // 判定当前台必须用「分组 + 频道名」，不能用 url：
+                            // 直播源里不同频道共用同一条主线路很常见（CGTN 法语 / 西语 / 阿语三台
+                            // 的主线路完全一致，只有备用线路不同），按 url 比对会一次点亮三行（用户 18:51 反馈）。
+                            val isCurrent = selectedChannel?.let {
+                                it.name == channel.name && it.group == channel.group
+                            } == true
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()

@@ -408,7 +408,8 @@ fun MobileVideoPlayer(
                 // 对用户只说结论和下一步：不管是编码不识别、404 还是网络问题，
                 // 他这一层能做的动作只有「换一个源」，不需要知道 errorCode。
                 // 原始原因写进 logcat，排查时看 MB-PLAY 这条。
-                val message = "播放失败，请更换播放源。"
+                // 直播没有「播放源 chips」这个概念，用户能做的动作是换台，不能说「更换播放源」。
+                val message = if (isLive) "播放失败，请切换频道。" else "播放失败，请更换播放源。"
                 Log.w(
                     "MB-PLAY",
                     "播放失败 code=${error.errorCodeName} cause=${cause?.javaClass?.simpleName} msg=${cause?.message}"
@@ -1305,7 +1306,11 @@ fun MobileVideoPlayer(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(drawerChannels) { channel ->
-                            val isCurrent = channel.url == currentChannel?.url || channel.name == currentChannel?.name
+                            // 同 AnimatedMainScreen：按「分组 + 频道名」判当前台。
+                            // 原来还带了 url 比对，而不同频道共用同一条主线路时（CGTN 三台），
+                            // 一条 url 会点亮整个抽屉里的多个频道。
+                            val isCurrent = channel.name == currentChannel?.name &&
+                                channel.group == currentChannel?.group
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.04f),
