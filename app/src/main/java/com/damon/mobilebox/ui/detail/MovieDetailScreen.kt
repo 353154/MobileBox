@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -147,6 +148,36 @@ fun MovieDetailScreen(
         android.util.Log.d("MB-DETAIL", "poster=$loadablePosterUrl")
     }
 
+    // ---- 跨站线路聚合 ----
+    // 「播放源线路」原本只来自当前站点的 vod_play_url。这里按片名并发查其它可搜索站点，
+    // 把同名影片的线路追加到 routes 末尾（chip 名带站名前缀）。
+    // 一条线路解码失败时可以直接换另一家站，不用退出去重新搜。
+    // 异步追加不阻塞首屏：先展示当前站线路，查到再补。
+    var mergedData by remember { mutableStateOf(finalData) }
+    LaunchedEffect(finalData) {
+        mergedData = finalData
+        if (finalData.routes.isEmpty() || finalData.title.isBlank()) return@LaunchedEffect
+        val extras = TvBoxRepository.searchCrossSiteRoutes(
+            keyword = finalData.title,
+            excludeSiteKey = TvBoxRepository.selectedSite.value?.key
+        )
+        if (extras.isEmpty()) return@LaunchedEffect
+        val extraRoutes = extras.flatMap { (site, detail) ->
+            // 站名太长会撑爆 chip，截掉「(17万+高清海报)」这类后缀
+            val shortName = site.name.substringBefore('(').substringBefore('（').trim()
+            detail.routes.map { route ->
+                route.copy(
+                    routeId = "${site.key}_${route.routeId}",
+                    routeName = "$shortName·${route.routeName}"
+                )
+            }
+        }
+        if (extraRoutes.isNotEmpty()) {
+            mergedData = finalData.copy(routes = finalData.routes + extraRoutes)
+            android.util.Log.d("MB-XSITE", "跨站聚合：+${extraRoutes.size} 条线路 / ${extras.size} 个站点")
+        }
+    }
+
     val scrollState = rememberScrollState()
 
     // 整屏白遮罩进度：同一份进度同时驱动白遮罩、B 层字色与状态栏图标，
@@ -252,8 +283,12 @@ fun MovieDetailScreen(
     }
 
     var selectedRouteIndex by remember { mutableIntStateOf(0) }
-    val currentRoute = finalData.routes.getOrNull(selectedRouteIndex) ?: finalData.routes.first()
-    var selectedEpisodeId by remember { mutableIntStateOf(currentRoute.episodes.firstOrNull()?.episodeId ?: 1) }
+    val currentRoute = mergedData.routes.getOrNull(selectedRouteIndex) ?: mergedData.routes.first()
+    // key 带上 selectedRouteIndex：切线路（含跨站线路）时集数重置到该线路第 1 集，
+    // 不同站的集数/编号可能完全不同，沿用旧 episodeId 会落在错误的位置
+    var selectedEpisodeId by remember(selectedRouteIndex) {
+        mutableIntStateOf(currentRoute.episodes.firstOrNull()?.episodeId ?: 1)
+    }
     var currentPlayingEpisode by remember { mutableStateOf<VideoEpisode?>(null) }
     var isFavorite by remember { mutableStateOf(false) }
 
@@ -435,10 +470,12 @@ fun MovieDetailScreen(
                                         onPlayEpisode(ep)
                                     }
                                 )
-                                if (finalData.routes.size > 1) {
+                                if (mergedData.routes.size > 1) {
                                     Spacer(modifier = Modifier.height(14.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        finalData.routes.forEachIndexed { index, route ->
+                                    // 必须是 LazyRow：跨站聚合后线路常有 5+ 条，普通 Row 会把
+                                    // 超出屏宽的 chip 直接裁掉（既看不见也点不到）
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        itemsIndexed(mergedData.routes) { index, route ->
                                             FilterChip(
                                                 selected = selectedRouteIndex == index,
                                                 onClick = { selectedRouteIndex = index },
@@ -549,7 +586,7 @@ fun MovieDetailScreen(
                             .zIndex(10f)
                     ) {
                         PlayerDetailScreen(
-                            videoData = finalData,
+                            videoData = mergedData,
                             initialEpisode = ep,
                             initialRouteIndex = selectedRouteIndex,
                             onBackClick = { currentPlayingEpisode = null },

@@ -552,6 +552,48 @@ object TvBoxRepository {
     }
 
     /**
+     * 详情页跨站线路聚合：按片名精确匹配并发查所有可搜索站点（排除 [excludeSiteKey]），
+     * 返回每个命中站点解析出的详情（自带线路与选集）。
+     *
+     * 只保留片名与关键词完全一致的条目 —— 模糊命中会把「第二季」「剧场版」混进同一条线路列表。
+     * 搜索接口同样返回 vod_play_url，所以结果无需再请求详情接口。
+     */
+    suspend fun searchCrossSiteRoutes(
+        keyword: String,
+        excludeSiteKey: String?
+    ): List<Pair<TvBoxSite, VideoDetailData>> = withContext(Dispatchers.IO) {
+        val word = keyword.trim()
+        if (word.isEmpty()) return@withContext emptyList()
+        val sites = _currentSites.value.filter {
+            it.searchable != 0 && it.api.startsWith("http", ignoreCase = true) && it.key != excludeSiteKey
+        }
+        if (sites.isEmpty()) return@withContext emptyList()
+
+        coroutineScope {
+            sites.map { site ->
+                async {
+                    runCatching {
+                        TvBoxParser.fetchMacCmsVodList(
+                            site.api,
+                            page = 1,
+                            keyword = word,
+                            callTimeoutMs = 6_000
+                        ).getOrNull()?.list.orEmpty()
+                            .mapNotNull { vod ->
+                                val detail = TvBoxParser.parseMacCmsVodToDetail(vod)
+                                if (detail.title.trim() == word && detail.routes.isNotEmpty()) {
+                                    site to detail
+                                } else {
+                                    null
+                                }
+                            }
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten()
+        }
+    }
+
+    /**
      * 对跨数据源 (如同时存在 TXT 和 M3U 直播源) 的同组同名电视台进行去重与多线路归一化聚合
      */
     fun deduplicateGroups(rawGroups: List<LiveChannelGroup>): List<LiveChannelGroup> {
