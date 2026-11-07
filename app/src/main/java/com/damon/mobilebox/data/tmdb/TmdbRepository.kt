@@ -488,13 +488,27 @@ object TmdbRepository {
             .filter { it.job == "Director" }
             .mapNotNull { crew ->
                 crew.name?.takeIf(String::isNotBlank)
-                    ?.let { TmdbPerson(it, "导演", TmdbImage.profile(crew.profilePath)) }
+                    ?.let {
+                        TmdbPerson(
+                            name = it,
+                            role = "导演",
+                            profileUrl = TmdbImage.profile(crew.profilePath),
+                            personId = crew.id
+                        )
+                    }
             }
         // 剧集没有 Director 这个 crew 职位，主创信息在详情顶层的 created_by 上。
         val creators = detail.createdBy.orEmpty()
             .mapNotNull { crew ->
                 crew.name?.takeIf(String::isNotBlank)
-                    ?.let { TmdbPerson(it, "主创", TmdbImage.profile(crew.profilePath)) }
+                    ?.let {
+                        TmdbPerson(
+                            name = it,
+                            role = "主创",
+                            profileUrl = TmdbImage.profile(crew.profilePath),
+                            personId = crew.id
+                        )
+                    }
             }
         val actors = credits.cast.orEmpty()
             .sortedBy { it.order }
@@ -504,7 +518,8 @@ object TmdbRepository {
                         name = it,
                         // 角色名为空时显示「演员」，避免头像下面留一条空白
                         role = member.character?.trim().orEmpty().ifBlank { "演员" },
-                        profileUrl = TmdbImage.profile(member.profilePath)
+                        profileUrl = TmdbImage.profile(member.profilePath),
+                        personId = member.id
                     )
                 }
             }
@@ -585,6 +600,279 @@ object TmdbRepository {
         val parsed = runCatching { gson.fromJson(body, TmdbImages::class.java) }.getOrNull()
         val pick = pickLogo(parsed) ?: return Logo("", 0f)
         return Logo(pick.first, pick.second)
+    }
+
+    // ---------------- 演员作品年表 ----------------
+
+    private const val PERSON_TTL_MS = 6L * 60 * 60 * 1000
+    /** 年表上限： prolific 演员的 combined_credits 动辄两三白条，整页滚不完也没意义。 */
+    private const val PERSON_WORK_LIMIT = 60
+
+    private class PersonEntry(val at: Long, val profile: TmdbPersonProfile)
+
+    /** 进程内缓存。详情页点击时已经查过一次，时间轴页命中即首帧有数据。 */
+    private val personCache = java.util.concurrent.ConcurrentHashMap<String, PersonEntry>()
+
+    /** 姓名 → personId：订阅源文本没有 id，按姓名搜过一次就别再搜。 */
+    private val personNameIndex = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * 查一位演职人员的作品年表。
+     *
+     * 有 personId（TMDB credits 带出来的）直接按 id 拉；没有（订阅源 actor 文本兜底）
+     * 走 `/3/search/person` 找人。**失败或没有作品一律返回 null**，调用方据此「不展开」时间轴，
+     * 与详情页的刮削降级口径一致：TMDB 是增强，不是功能依赖。
+     */
+    suspend fun personProfile(personId: Int, name: String): TmdbPersonProfile? {
+        val cleanName = name.trim()
+        if (personId <= 0 && cleanName.isEmpty()) return null
+        val key = if (personId > 0) "id:$personId" else "name:$cleanName"
+        personCache[key]?.let {
+            if (SystemClock.elapsedRealtime() - it.at < PERSON_TTL_MS) return it.profile
+        }
+
+        val resolvedId = if (personId > 0) personId
+        else personNameIndex[cleanName] ?: searchPerson(cleanName)
+            ?.also { personNameIndex[cleanName] = it }
+        if (resolvedId == null || resolvedId <= 0) return null
+
+        // combined_credits 一次拿到电影 + 剧集的全部参演/幕后记录，external_ids 给社交账号。
+        val body = request(
+            "/3/person/$resolvedId",
+            mapOf(
+                "language" to LANGUAGE,
+                "append_to_response" to "combined_credits,external_ids"
+            )
+        ) ?: return null
+        val detail = runCatching {
+            gson.fromJson(body, TmdbPersonDetailResponse::class.java)
+        }.getOrNull() ?: return null
+
+        val works = buildWorks(detail)
+        if (works.isEmpty()) return null
+
+        val profile = TmdbPersonProfile(
+            personId = resolvedId,
+            name = detail.name?.trim().orEmpty().ifBlank { cleanName },
+            profileUrl = TmdbImage.profile(detail.profilePath),
+            department = detail.department.orEmpty(),
+            twitterId = detail.externalIds?.twitterId?.trim().orEmpty(),
+            instagramId = detail.externalIds?.instagramId?.trim().orEmpty(),
+            works = works
+        )
+        personCache[key] = PersonEntry(SystemClock.elapsedRealtime(), profile)
+        android.util.Log.d("MB-TMDB", "person ${profile.name} -> ${works.size} works")
+        return profile
+    }
+
+    /** 时间轴页直达时先看缓存（详情点击那次已经填好了）。 */
+    fun peekPerson(personId: Int): TmdbPersonProfile? =
+        personCache["id:$personId"]?.profile
+
+    /**
+     * 按姓名找人：同名时优先「姓名完全一致 → 表演部门 → 热度」，避免搜出一个同名幕后。
+     * 只取第一个，年表页不做选人 UI —— 用户点的是某部片里的这个人，不该再让他挑一次。
+     */
+    private suspend fun searchPerson(name: String): Int? {
+        val body = request(
+            "/3/search/person",
+            mapOf("language" to LANGUAGE, "query" to name, "page" to "1")
+        ) ?: return null
+        val parsed = runCatching {
+            gson.fromJson(body, TmdbPersonSearchResponse::class.java)
+        }.getOrNull() ?: return null
+        return parsed.results.orEmpty()
+            .filter { it.id > 0 }
+            .maxWithOrNull(
+                compareBy<TmdbPersonSearchItem> {
+                    if (it.name?.trim().equals(name, ignoreCase = true)) 1 else 0
+                }
+                    .thenBy { if (it.department == "Acting") 1 else 0 }
+                    .thenBy { it.popularity ?: 0.0 }
+            )?.id
+    }
+
+    /**
+     * cast + 主要 crew 合成时间轴。
+     *
+     * 同一部片既演又导会在 combined_credits 里出现两条，按 `type:id` 合并成一条、
+     * 身份并列（截图里的「导演 · Writer · 制作人」就是这个效果）。日期按 ISO 字符串倒序，
+     * 无日期的排最后；票数很少的评分由 UI 决定是否显示，这里只原样保留。
+     */
+    private fun buildWorks(detail: TmdbPersonDetailResponse): List<TmdbPersonWork> {
+        val cast = detail.combinedCredits?.cast.orEmpty()
+        val crew = detail.combinedCredits?.crew.orEmpty()
+            .filter { TmdbJobNames.of(it.job) != null }
+        val buckets = LinkedHashMap<String, MutableList<TmdbCreditItem>>()
+        (cast + crew).forEach { item ->
+            val type = item.mediaType
+            if (item.id <= 0 || (type != "movie" && type != "tv")) return@forEach
+            if (item.displayTitle.isEmpty()) return@forEach
+            buckets.getOrPut("$type:${item.id}") { mutableListOf() }.add(item)
+        }
+        return buckets.values.mapNotNull { items ->
+            val first = items.first()
+            val roles = LinkedHashSet<String>()
+            items.forEach { item ->
+                val job = item.job?.trim().orEmpty()
+                if (job.isEmpty()) {
+                    val character = item.character?.trim().orEmpty()
+                    roles.add(if (character.isEmpty()) "演员" else "饰演 $character")
+                } else {
+                    TmdbJobNames.of(job)?.let { roles.add(it) }
+                }
+            }
+            if (roles.isEmpty()) return@mapNotNull null
+            TmdbPersonWork(
+                tmdbId = first.id,
+                mediaType = first.mediaType ?: "movie",
+                title = first.displayTitle,
+                posterPath = items.map { it.posterPath.orEmpty() }
+                    .firstOrNull { it.isNotBlank() }.orEmpty(),
+                dateText = items.map { it.dateText }
+                    .firstOrNull { it.isNotBlank() }.orEmpty(),
+                genres = TmdbGenreNames.of(first.genreIds),
+                roles = roles.take(3),
+                voteAverage = first.voteAverage ?: 0.0,
+                voteCount = first.voteCount ?: 0,
+                popularity = first.popularity ?: 0.0
+            )
+        }
+            .sortedWith(
+                compareByDescending<TmdbPersonWork> { it.dateText }
+                    .thenByDescending { it.popularity }
+            )
+            .take(PERSON_WORK_LIMIT)
+    }
+
+    // ---------------- 详情页：相关作品 / 分集剧照 ----------------
+
+    private const val DETAIL_EXTRA_TTL_MS = 6L * 60 * 60 * 1000
+
+    private class RelatedEntry(val at: Long, val items: List<TmdbRelatedWork>)
+    private val relatedCache = java.util.concurrent.ConcurrentHashMap<String, RelatedEntry>()
+
+    /**
+     * 「相关作品」：优先 `/recommendations`（相关性更高），空结果回退 `/similar`。
+     * 两条都是读接口、Worker 白名单早已放行。只保留有标题 + 有海报的条目，
+     * 最多 12 条；拿不到就返回空列表，UI 整块隐藏（TMDB 是增强，不是功能依赖）。
+     */
+    suspend fun relatedWorks(mediaType: String, tmdbId: Int): List<TmdbRelatedWork> {
+        if (tmdbId <= 0 || mediaType.isBlank()) return emptyList()
+        val key = "$mediaType:$tmdbId"
+        relatedCache[key]?.let {
+            if (SystemClock.elapsedRealtime() - it.at < DETAIL_EXTRA_TTL_MS) return it.items
+        }
+        val params = mapOf("language" to LANGUAGE)
+        val paths = listOf(
+            "/3/$mediaType/$tmdbId/recommendations",
+            "/3/$mediaType/$tmdbId/similar"
+        )
+        for (path in paths) {
+            val body = request(path, params) ?: continue
+            val results = runCatching { gson.fromJson(body, TmdbSearchResponse::class.java) }
+                .getOrNull()?.results.orEmpty()
+            val items = results.mapNotNull { item ->
+                val title = item.displayTitle.trim()
+                val poster = TmdbImage.poster(item.posterPath)
+                if (item.id <= 0 || title.isBlank() || poster.isBlank()) null
+                else TmdbRelatedWork(
+                    tmdbId = item.id,
+                    // recommendations / similar 的响应不带 media_type，沿用当前影片类型。
+                    mediaType = mediaType,
+                    title = title,
+                    posterUrl = poster,
+                    voteAverage = item.voteAverage ?: 0.0,
+                    year = item.yearText,
+                    overview = item.overview.orEmpty().trim()
+                )
+            }.distinctBy { it.tmdbId }.take(12)
+            if (items.isNotEmpty()) {
+                relatedCache[key] = RelatedEntry(SystemClock.elapsedRealtime(), items)
+                return items
+            }
+        }
+        // 空结果也缓存，避免每次进详情页都打两遍接口。
+        relatedCache[key] = RelatedEntry(SystemClock.elapsedRealtime(), emptyList())
+        return emptyList()
+    }
+
+    private class EpisodeEntry(val at: Long, val items: Map<Int, TmdbEpisodeInfo>)
+    private val episodeCache = java.util.concurrent.ConcurrentHashMap<String, EpisodeEntry>()
+    private val seasonBriefCache =
+        java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, List<TmdbSeasonBrief>>>()
+
+    /** `/3/tv/{id}` 顶层的 seasons（排除 season 0 特别篇），按季号升序。 */
+    private suspend fun seasonBriefs(tmdbId: Int): List<TmdbSeasonBrief> {
+        seasonBriefCache[tmdbId]?.let { (at, list) ->
+            if (SystemClock.elapsedRealtime() - at < DETAIL_EXTRA_TTL_MS) return list
+        }
+        val body = request("/3/tv/$tmdbId", mapOf("language" to LANGUAGE)) ?: return emptyList()
+        val seasons = runCatching { gson.fromJson(body, TmdbSeasonListResponse::class.java) }
+            .getOrNull()?.seasons.orEmpty()
+            .filter { it.seasonNumber > 0 && it.episodeCount > 0 }
+            .sortedBy { it.seasonNumber }
+        if (seasons.isNotEmpty()) {
+            seasonBriefCache[tmdbId] = SystemClock.elapsedRealtime() to seasons
+        }
+        return seasons
+    }
+
+    /**
+     * 给采集站剧集的每一集补 TMDB 分集剧照 / 简介，key = 采集站集号（1-based）。
+     *
+     * 采集站只有「第 N 集」没有季信息，所以按 TMDB seasons 顺序把各季串成连续编号：
+     * 单季剧直接按 `episode_count == 源站集数` 精确命中；多季剧按季序累加，最多拉 3 季
+     * （避免一部 200 集的老剧打出十几个请求）。**只在 TV 且确实拿到分集资料时返回非空**，
+     * 映射不上的集由 UI 保持原来的 chips，不伪造剧照和简介。
+     */
+    suspend fun episodeInfos(tmdbId: Int, episodeCount: Int): Map<Int, TmdbEpisodeInfo> {
+        if (tmdbId <= 0 || episodeCount <= 1) return emptyMap()
+        val key = "tv:$tmdbId:$episodeCount"
+        episodeCache[key]?.let {
+            if (SystemClock.elapsedRealtime() - it.at < DETAIL_EXTRA_TTL_MS) return it.items
+        }
+        val seasons = seasonBriefs(tmdbId)
+        if (seasons.isEmpty()) return emptyMap()
+
+        val exact = seasons.firstOrNull { it.episodeCount == episodeCount }
+        val picked = if (exact != null) listOf(exact) else buildList {
+            var total = 0
+            for (season in seasons) {
+                if (size >= 3) break
+                add(season)
+                total += season.episodeCount
+                if (total >= episodeCount) break
+            }
+        }
+
+        val result = LinkedHashMap<Int, TmdbEpisodeInfo>()
+        var global = 1
+        for (season in picked) {
+            if (global > episodeCount) break
+            val body = request(
+                "/3/tv/$tmdbId/season/${season.seasonNumber}",
+                mapOf("language" to LANGUAGE)
+            ) ?: continue
+            val episodes = runCatching { gson.fromJson(body, TmdbSeasonResponse::class.java) }
+                .getOrNull()?.episodes.orEmpty()
+                .sortedBy { it.episodeNumber }
+            for (ep in episodes) {
+                if (global > episodeCount) break
+                result[global] = TmdbEpisodeInfo(
+                    episodeId = global,
+                    name = ep.name.orEmpty().trim(),
+                    overview = ep.overview.orEmpty().trim(),
+                    stillUrl = TmdbImage.still(ep.stillPath),
+                    airDate = ep.airDate.orEmpty(),
+                    runtimeMinutes = ep.runtime ?: 0
+                )
+                global++
+            }
+        }
+        val map: Map<Int, TmdbEpisodeInfo> = result.toMap()
+        episodeCache[key] = EpisodeEntry(SystemClock.elapsedRealtime(), map)
+        return map
     }
 
     // ---------------- 路线编排 ----------------

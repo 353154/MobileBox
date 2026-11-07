@@ -14,6 +14,14 @@ val localProps = Properties().apply {
     if (file.exists()) file.inputStream().use { load(it) }
 }
 val defaultSubUrl: String = localProps.getProperty("DEFAULT_SUB_URL", "").trim()
+// TMDB v4 Read Access Token 只放 local.properties，编译期注入 BuildConfig.TMDB_TOKEN，
+// 也就是把真实 key 直接硬编码进本地 APK（个人自用，不下发到公开仓库）。
+// GitHub 上的 TmdbConfig.kt 只保留一串待填写占位符，见该文件注释。
+// 仓库是公开的：任何写进源码的字面量都会被推到 GitHub。留空即关闭 TMDB 刮削。
+// 转义是防止将来换成含引号 / 反斜杠的凭据时生成不合法的 Java 常量。
+val tmdbToken: String = localProps.getProperty("TMDB_TOKEN", "").trim()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 
 android {
     namespace = "com.damon.mobilebox"
@@ -30,6 +38,7 @@ android {
 
         // 首启若用户没有配置过订阅，就用它自动订阅一次（为空则保持空白引导）
         buildConfigField("String", "DEFAULT_SUB_URL", "\"$defaultSubUrl\"")
+        buildConfigField("String", "TMDB_TOKEN", "\"$tmdbToken\"")
     }
 
     buildTypes {

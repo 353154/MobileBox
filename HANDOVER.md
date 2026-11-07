@@ -1,10 +1,10 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.18（首页纯 TMDB · 导航栏去面板 · 数据源真实分类 · 直播/搜索版式统一 · 缺失图骨架化）
-> **更新时间**：2026-11-08 00:5x
+> **文档版本**：v3.26（02:45 批量验收：11 批改动收口并提交 · 白纱过渡上移 · 选集胶囊条件化 · 延续 v3.25）
+> **更新时间**：2026-11-08 02:45
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：61 个 Kotlin 文件，约 18.8k 行（实测 18786）
-> **已推送**：`origin/main = ecb60c9`；本轮用户验收通过后提交，本地领先 1 个提交（未 push，等用户明确说「推」）
+> **当前规模**：63 个 Kotlin 文件，约 20.5k 行（实测 20530）
+> **已推送**：本轮 11 批改动（01:07 / 01:11 / 01:24 / 01:39 / 01:45 / 01:58 / 02:06 / 02:22 / 02:31 / 02:34 / 02:40）**02:45 用户验收通过并全部提交推送**；`origin/main = HEAD`（本次提交 hash 见 git log，回填中）。ROADMAP 四条补充迭代已勾、CHANGELOG 已收口。
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。
@@ -509,6 +509,376 @@ TMDB 版（`TmdbCategoryScreen.kt`）与旧网格版（`CategoryScreen.kt`）代
 - 线上 TMDB Worker 未部署（APK 直连 TMDB 是主路），不影响本轮功能。
 
 
+### 8.26 TMDB 凭据移出源码 + 搜索页「最近搜索」（2026-11-08 01:07 装机，用户自测中）
+
+**密钥泄露事故（公开仓库，读前必看）**
+- 事实：`TmdbConfig.kt` 里曾硬编码 v4 Read Access Token（239 字符 JWT），由 `b93037a` 引入，**已推送到公开仓库** `353154/MobileBox`（public、2 forks），`origin/main` 的历史里仍能看到。
+- 影响：token 只读（`api_read`），不涉及账号写权限，后果是额度被别人白嫖。
+- 用户拍板：**只清空当前源码字面量 + 到 TMDB 后台轮换**，**不重写 Git 历史、不 force push**（重写会改写 `882463c` 等所有 commit hash，且 fork / 已 clone 副本 / 缓存仍可能留着旧串）。
+- ⚠️ **必须由维护者完成**：TMDB → Settings → API → 撤销 / 重新生成 v4 Read Access Token。**代码清空不会让旧 token 失效**；轮换前公开历史里那串仍然有效。
+
+**代码定案**
+- `local.properties`（`.gitignore` 已忽略）新增 `TMDB_TOKEN=`；`app/build.gradle.kts` 照 `DEFAULT_SUB_URL` 的模式读它并 `buildConfigField("String", "TMDB_TOKEN", …)`；`TmdbConfig.ACCESS_TOKEN` 由 `const val` 字面量改为 `val = BuildConfig.TMDB_TOKEN`（引用 Java 静态常量不能用 `const`）。
+- 旧凭据已由脚本原样搬进 `local.properties`，**本次装机功能不中断**；轮换后只替换这一行的值再重新编译。留空则 `isConfigured = false`，刮削整体关闭。
+- **仍存在的边界**：token 编译进 APK（BuildConfig 是编译期常量），反编译可提取。对外分发必须改走 `tools/tmdb-proxy/worker.js`，把 token 放 Worker 环境变量 —— 当前是个人自用直连，不做。
+- `MobileBoxApp.kt` 注释同步改为「凭据由 local.properties 注入 BuildConfig」。
+- 复核：`app/src/main` 与 `tools` 里已无 JWT 字面量，只剩 `TmdbClient.isBearerToken()` 的 `startsWith("eyJ")` 判断与 Worker 注释。
+
+**最近搜索**
+- 新增 `data/search/SearchHistoryStore.kt`：独立 `search_prefs` DataStore（与 `watch_prefs` 分开），最多 10 条、大小写不敏感去重、最新在前；`Application.onCreate` init 一次，共享一份 StateFlow，UI 用 `collectAsState()` 不带 initial。
+- `ui/search/SearchScreen.kt`：只在未搜索的空状态显示「最近搜索」chips（`FlowRow` + `InputChip`），点 chip 回填关键词并直接搜索，右侧 × 删单条、右上角「清空」；`submit()` 发起时写入，不记空词、不记结果对象。结果页不叠历史，避免挡住海报行。
+- 会话内免重查仍由进程级 `SearchMemory` 负责，两者职责不混。
+- **编译坑**：`Modifier.weight` 是 `ColumnScope` 的成员扩展，**不要** import `androidx.compose.foundation.layout.weight`（该顶层符号是 internal，导入即编译失败）。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success（01:07）；按约定未自测。**未 commit、未 push、ROADMAP 未勾**，等用户真机验收。
+
+
+### 8.27 详情页搜索转圈 + GitHub 版凭据占位符（2026-11-08 01:11 装机，用户自测中）
+
+**详情页「正在搜索播放源」加转圈**
+- 所有影片详情入口（TMDB 首页 / 采集源 / 搜索结果 / 观影列表）共用 `MovieDetailScreen`，
+  「播放资源」区块在 `routes.isEmpty() && sourceState == SourceLookup.Searching` 时显示「正在搜索播放源…」。
+  原来只有一行静态文字，看着像卡住；现在文字左侧挂 **16dp `CircularProgressIndicator`**（2dp 线宽，
+  颜色取 `LocalBTextColors.primary@70%`，与文字同色）。`NotFound / Idle` 仍是纯文字，
+  `NotFound` 的副提示「换一个订阅源…」原样保留。
+- **未动**：播放态「正在尝试 X」由播放器自带 buffering 菊花；搜索页「正在搜索全部站点…」本来就有转圈；
+  `PlayerDetailScreen` 的「正在搜索局域网电视设备」是 DLNA toast，不是搜资源。
+
+**GitHub 版凭据改成显式占位符（用户 01:08 定案）**
+- 用户要求：真实 key **直接硬编码进本地 APK**（自用），但**不提交 GitHub**，
+  GitHub 上的代码里用「一串待填写字符」代替并写好注释。
+- `TmdbConfig.kt` 入库版：
+  ```kotlin
+  const val PLACEHOLDER_TOKEN = "YOUR_TMDB_V4_READ_ACCESS_TOKEN_HERE"
+  val ACCESS_TOKEN: String = BuildConfig.TMDB_TOKEN.ifBlank { PLACEHOLDER_TOKEN }
+  val isConfigured: Boolean get() = ACCESS_TOKEN.isNotBlank() && ACCESS_TOKEN != PLACEHOLDER_TOKEN
+  ```
+  注释里写明「禁止把真实 token 写进本文件 / 真实值只在 `local.properties` / 编译期注入 BuildConfig /
+  对外分发必须改 Worker 代理」。`app/build.gradle.kts` 的注释同步为「本地构建把真实 key 编译期硬编进 APK」。
+- **`isConfigured` 必须排除占位符**：否则拿一串假 token 去打 TMDB 会 401，并触发 `tokenInvalid`
+  让本次进程内所有刮削停摆。
+- 链路效果：本地 `local.properties → BuildConfig.TMDB_TOKEN → 编译期常量进 APK`；
+  GitHub 上 `TmdbConfig.kt` 只有占位符 + 注释，`build.gradle.kts` 只有读取逻辑，无明文。
+- ⚠️ **占位符只对新提交生效**：公开仓库历史里 `b93037a` 的旧明文仍在（用户决定不重写历史）。
+  **唯一能让它失效的动作仍是维护者到 TMDB 后台撤销 / 轮换**，轮换后替换 `local.properties` 那一行并重编译。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success（01:11），未自测；
+待入库文件复核无 JWT 明文。**未 commit、未 push、ROADMAP 未勾**，等用户真机验收。
+
+### 8.28 演员作品时间轴（2026-11-08 01:24 装机，用户自测中）
+
+> ⚠️ **02:06 覆盖**：本节「页面」小节里关于**人物信息属于 A 层**、**海报墙 4 行错落网格 / 26s 呼吸漂移 / 1.35 倍放大**、
+> **动画值必须在 composition 层读成普通 Float** 的描述已全部作废，以 **8.30** 为准。
+> 入口、数据层、三层遮罩（01:45 定案）、时间轴行、灰框与评分徽章的结论仍然有效。
+
+**需求**（用户给三张参考图）：点详情页的演员信息，**能从 TMDB 查到资料才展开**一个时间轴页；
+上半屏是该演员参演作品海报的拼接、缓慢移动，时间轴里的作品点进去能看影片详情页。
+
+**入口与「查得到才展开」**
+- `MovieDetailScreen` 的 `CastRow` 头像可点（关 ripple：`indication = null`，与直播卡片同款）。
+  点击后**先在详情页异步预查** `TmdbRepository.personProfile(personId, name)`：查得到才回调
+  `onPersonClick(personId, name)` 让导航层跳页；查不到只弹一句 Toast「TMDB 暂无该演职人员的作品资料」，
+  **不跳进空壳页面**。预查期间头像上叠半透明黑底 + 22dp 白转圈，避免用户以为没点上；
+  `AtomicBoolean` 防连点。两个 detail 路由都接了同一个回调。
+- 预查结果填进 `TmdbRepository` 的进程缓存，时间轴页 `peekPerson(personId)` 命中即**首帧有数据**；
+  只有杀进程后直达 / 6 小时缓存过期才由页面自己再拉一次（内含加载态与空态兜底）。
+- `TmdbPerson` 新增 `personId`：从 credits 的 cast/crew `id` 带出，详情页点头像直接按 id 查人，
+  不做姓名歧义。订阅源 `actor` 文本回退出来的人 `personId = 0`，才走 `/3/search/person`
+  （同名时按「姓名完全一致 → 表演部门 → 热度」取第一个）。旧缓存缺该字段由 Gson 反射赋 0，兼容。
+
+**数据层**
+- 新增响应模型：`TmdbPersonSearchResponse` / `TmdbPersonDetailResponse` /
+  `TmdbCombinedCredits` / `TmdbCreditItem` / `TmdbExternalIds`；对外模型
+  `TmdbPersonProfile`（personId / 姓名 / 头像 / 部门 / X / IG / works）与 `TmdbPersonWork`。
+- 主请求：`/3/person/{id}?language=zh-CN&append_to_response=combined_credits,external_ids`，
+  复用 `TmdbRepository.request` 的直连 → Worker 降级、熔断、`isConfigured` 检查。
+  `tools/tmdb-proxy/worker.js` 白名单补 `/3/search/person` 与 `/3/person/{id}`（线上 Worker 仍未部署）。
+- `buildWorks()`：cast + 主要 crew（只留导演/编剧/制作人/主创等，`TmdbJobNames` 白名单）按
+  `type:id` 合并，同一部片既演又导合成一条、身份并列；日期按 ISO 字符串倒序（无日期排最后），
+  `genre_ids` 经 `TmdbGenreNames` 翻中文取 2 个，上限 60 条。评分只原样保留，
+  票数太少由 UI 决定是否显示。
+- 缓存：`personCache`（`ConcurrentHashMap`，6h TTL，key = `id:` / `name:`）+ `personNameIndex`（姓名→id）。
+  **不落盘**：作品年表会随 TMDB 更新，没必要塞进 500 条的 `tmdb_cache.json`。
+
+**页面 `ui/person/PersonTimelineScreen.kt`**
+- 结构是 `Box` **三层**（01:45 最终定案，照搬详情页 A/B 层级，见下方追记）：
+  ① **A 层** = 固定的 `PersonHeader`（高 `screenHeightDp × 0.52`，360~520dp），**一动不动、自身也不淡出**；
+  ② **整屏遮罩** = 全屏纯 `colorScheme.surface` 矩形，
+  `drawBehind { drawRect(surface.copy(alpha = veilProgress)) }`，
+  `veilProgress = scrolled / (headerHeightPx × 0.9)` 随滚动 0→1 **均匀交叉淡入**
+  （不是面板从下往上盖、也不是空间渐变起始段，整屏同一个 alpha，任何时刻都没有边界）；
+  ③ **B 层** = 完全透明的 `LazyColumn`，第 0 项只是等高透明 `Spacer`，**所有行与卡片都不画背景**。
+- 海报墙：取年表里前 18 张有海报的作品，走 `TmdbImage.posterSmall`（w185，一屏十几张省一个数量级流量）；
+  4 行错落网格（4/5/3/4 列）+ 每张 ±4.5° 稳定散列微倾斜，`graphicsLayer` 放大 1.35~1.43 倍留出漂移余量，
+  `rememberInfiniteTransition` 单程 26 秒（`RepeatMode.Reverse`，一来回 52 秒），横移 ±85px / 纵移 ±45px
+  + 缓慢呼吸缩放，相邻两行再反向轻移 ±28px。**放大留边是硬要求**：不做的话漂移时会露出底色。
+  缺图一律 `PosterImage` 垫 Muted Palette 骨架。
+- 遮罩：`Brush.verticalGradient`，**终点必须是不透明的 `colorScheme.background`**，
+  否则海报墙与时间轴之间会切出水平硬线（首页底部渐隐层踩过同一个坑）；顶部压暗保证状态栏图标可读。
+- 头像（96×128dp 圆角）/ 姓名 / 「N 部作品」/ X、IG 账号压在墙上下缘；返回按钮是独立悬浮的
+  半透明白圆底 + 近黑箭头，带 `statusBarsPadding()`，不随列表滚动。
+- 时间轴行固定 122dp：左侧 62dp 画 1dp 竖线 + 圆点（`drawBehind`），显示年 / 月；右侧卡片
+  （68dp 宽 2:3 海报 + 片名 + 「电影/电视剧 · 类型 · ★评分」+ 身份；评分 `voteCount >= 10`
+  才显示，01:39 起并入类型行纯文本、不再有独立徽章），**整行与卡片完全透明**（01:45 定案），
+  `indication = null`。点卡片走 `detail/tmdb/{type}/{tmdbId}` —— 复用首页轮播那条路由，
+  详情页自己补元数据并回订阅源搜可播线路。
+
+**01:30 排版修复（用户截图反馈：两个灰色框）**
+- **现象**：时间轴每张卡片左侧多一格浅灰框、真海报被挤到右侧，文字区变窄导致「饰演 Prue McKeel (voi…」被截断；上半屏演员头像上方也多一块大灰框，姓名 / 作品数 / 社交行被整体下推。
+- **根因**：`PosterImage` 输出的是**两个平级节点**（`PosterPlaceholder` 骨架 + `AsyncImage` 真图），靠调用方把它们放进 `Box` 叠放。首页 / 分类页 / 搜索页原本都是 `Box + fillMaxSize()`，所以一直正常；新页面在 `Column` / `Row` 里直接调用，骨架就被当成独立一格排出来。**不是缺图、也不是骨架色板问题**。
+- **修法**：`PersonTimelineScreen` 三处（头像、海报拼接墙每格、时间轴卡片海报）各包一层 `Box`，尺寸 / 圆角 / 倾斜挂外层 Box，`PosterImage` 只传 `Modifier.fillMaxSize()`。**公共组件 `PosterImage` 一行未动**，不影响已验收的首页 / 分类 / 搜索。
+- 顺带说明：卡片里的「TMDB 7.x」小灰条是评分徽章（`voteCount >= 10` 才显示），不是灰框；01:30 未改，01:39 依用户反馈去掉。
+
+**01:39 三项修复（用户截图反馈：卡片右侧黑框 / 海报墙不动 / 墙跟着用户上滑）**
+- **「黑框」不是缺图**：是 TMDB 评分徽章。时间轴行固定 122dp、卡片内边距 10dp → 内容区 102dp，
+  片名 + 两行说明 + 7dp 间距 + 徽章总高溢出，`Column` 垂直居中后被裁掉下半截，
+  只剩一条带半截文字的灰底圆角块，看起来像莫名的空框。
+  **修法**：删掉独立徽章 `Box`，评分以 `★ x.x` 纯文本并入类型行（`voteCount >= 10` 口径不变），
+  行高 122dp 与 68×102 的 2:3 海报比例都不动。
+- **墙「不动」**：原漂移只有 60px / 42 秒（≈1.4px/s），叠加 1.35 倍缩放后肉眼几乎无法察觉；
+  且动画 State 只在 `graphicsLayer` 的 draw-phase block 里读，订阅关系不稳。
+  **修法**：`rememberInfiniteTransition` 与 `drift` 的读取提到 `PersonHeader` 的 composition 层，
+  以普通 `Float` 传进 `PosterCollage`；单程 26 秒（`RepeatMode.Reverse`，一来回 52 秒），
+  横移 170px / 纵移 90px、缩放 1.35→1.43 缓慢呼吸、±0.5° 微转，
+  相邻两行再反向轻移 ±56px，静看几秒可辨流动又不跳帧。
+- **墙「跟着滚」**：原实现把 `PersonHeader` 当 `LazyColumn` 第 0 项，必然一起被推走。
+  **修法**：`PersonHeader` 移到 `Box` 固定底层，`graphicsLayer.alpha` 由
+  `derivedStateOf { firstVisibleItemScrollOffset / (0.95 × headerHeightPx) }` 线性归零 ——
+  **墙留在原地慢慢淡出**（头像 / 姓名 / 作品数一起淡出，不做任何 translationY）；
+  列表第 0 项改等高透明 `Spacer`，每个 `TimelineRow` 整行刷不透明页面背景，
+  内容上滑时盖住正在淡出的墙，不会行间漏图。返回按钮仍独立悬浮。
+  - ⚠️ **本条的「行背景盖墙」与「header 自身 alpha 淡出」已被 01:45 推翻**：
+    行背景会随滚动冒出一堆矩形块并切出硬分界线。最终方案见下方 01:45，以三层结构为准。
+- 改动只落在 `ui/person/PersonTimelineScreen.kt` 一个文件，TMDB 数据层 / 导航 / 公共组件均未动。
+
+**01:45 最终修正（用户截图：滑动时突然出现长方块移动、上下分界线太明显；提示「还记得 AB 层级动画时 A 层怎么隐藏的吗」）**
+- **根因**：01:39 用「每个 `TimelineRow` 整行刷不透明页面背景」去掩盖固定底层，等于让一串
+  122dp 矩形块随滚动一块块冒出来，块顶就是那条明显的水平分界线；同时卡片自己的
+  `background(surface)` 在海报墙区域也是一块白矩形。这是用「内容去盖 A 层」，方向就错了。
+- **照搬详情页 A/B 定案**（`MovieDetailScreen` 第 902–915 行）：A 层海报墙**固定不动、自身不淡出**，
+  隐藏它的是**一层全屏纯 `colorScheme.surface` 色矩形**，靠 `drawRect(surface.copy(alpha = p))`
+  让 alpha 随滚动 0→1 **均匀交叉淡入** —— 整屏同一个 alpha，无面板边界、无渐变起始段、无灰带。
+  B 层内容面板完全透明。浅色主题「变白」、深色主题「压暗」。
+- **具体改动**（仍只动 `PersonTimelineScreen.kt`）：
+  ① 删 `headerAlpha` 与 `PersonHeader` 的 `alpha` 参数 / `graphicsLayer.alpha`，A 层不再自己淡出；
+  ② `headerAlpha` 换成 `veilProgress = scrolled / (headerHeightPx × 0.9f)`（详情页用 0.65，这里放慢到 0.9 保持「慢慢隐藏」），
+  在 A 层与 `LazyColumn` 之间插一层 `Box(Modifier.fillMaxSize().drawBehind { drawRect(veilColor.copy(alpha = veil)) })`，
+  `veil` 在 composition 层读成普通 Float 再进 draw lambda（避免 draw-phase 订阅不稳）；
+  ③ 删掉 `TimelineRow` 的整行 `.background()`、参数 `backgroundColor`，以及卡片的
+  `.clip(RoundedCornerShape(12.dp)) + .background(cardColor)` —— **B 层全透明**，
+  文字 / 海报直接浮在遮罩上；圆点外圈改用 `veilColor`；空态 `Column` 的背景也一并删掉。
+- 遮罩色取 `surface`（不是 `background`）：与详情页一致，卡片不再有独立底色后也不会出现色差块。
+  头部渐变终点仍是不透明 `background`（保证首屏零接缝），被整屏遮罩均匀覆盖后自然收敛到 `surface`。
+
+**状态**：首轮 `assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success（01:24），中途修了一个误 import `androidx.compose.foundation.lazy.item`（`item` 是 `LazyListScope` 成员方法，不需要导入）。
+排版修复版 `assembleDebug` BUILD SUCCESSFUL（01:29 产物）；第一次 install 时设备短暂离线（`adb devices -l` 为空），01:30 复查设备已重新上线并 **`adb install -r` Success**。
+01:39 三项修复版 `assembleDebug` BUILD SUCCESSFUL（17s）+ **`adb install -r` Success**。
+01:45 整屏遮罩版 `assembleDebug` BUILD SUCCESSFUL（17s）+ **`adb install -r` Success**（01:45），已装到真机。
+待入库文件复核无 JWT 明文。**02:45 用户验收通过，ROADMAP 已勾，随本轮提交推送**（全程按约定未自测 / 未截图，验收由用户发起）。
+
+### 8.29 详情页剧照 / 相关作品 / 分集卡片（2026-11-08 01:58 装机，用户自测中）
+
+**需求**（用户给两张参考图）：详情页剧照按参考图放大；剧照下面新增「相关作品」可左右滑；
+删除最下方的「离线缓存 / DLNA投屏 / 分享」；**如果有数据**给每一集补海报（分集剧照）和每集简介，
+简介显示不完整时**点简介本身**查看更多、**不要任何提示按钮**。
+
+**数据层（新增，不动 `TmdbMeta` / 磁盘缓存）**
+- 对外模型 `TmdbRelatedWork`（id / type / 片名 / 海报 / 评分 / 年份 / 简介）、
+  `TmdbEpisodeInfo`（采集站集号 / 集名 / 简介 / `stillUrl` / 播出日期 / 时长）；
+  内部响应 `TmdbSeasonListResponse` / `TmdbSeasonBrief` / `TmdbSeasonResponse` / `TmdbSeasonEpisode`。
+- `TmdbRepository.relatedWorks(type, id)`：`/3/{type}/{id}/recommendations` 优先、空结果回退
+  `/similar`（Worker 白名单**本来就已放行**这两条），只留有标题 + 有海报的条目、去重取 12 条；
+  `media_type` 响应里没有，沿用当前影片类型。空结果也缓存，避免每次进页面打两遍接口。
+- `TmdbRepository.episodeInfos(tmdbId, episodeCount)`：**仅 TV + 多集**。先取 `/3/tv/{id}` 顶层的
+  `seasons`（排除 season 0），单季剧按 `episode_count == 源站集数` 精确命中，多季剧按季序累加、
+  **最多拉 3 季**防请求风暴；再逐季 `/3/tv/{id}/season/{n}` 取 `still_path / overview / air_date / runtime`，
+  按连续编号映射回采集站集号。`worker.js` 白名单补 `/3/tv/\d+/season/\d+`（线上 Worker 仍未部署，直连为主路）。
+- 两份数据都是**进程级 6h 缓存**（`relatedCache` / `episodeCache` / `seasonBriefCache`），
+  不落盘：分集资料会随 TMDB 更新，且不该撑大 500 条的 `tmdb_cache.json`。
+  拿不到一律返回空，UI 整块隐藏 —— 沿用「TMDB 是增强，不是功能依赖」。
+
+**页面 `MovieDetailScreen.kt`**
+- 剧照 `StillsRow`：从 200×112dp 小卡改成 **屏宽 78% 的 16:9 大横图**（`aspectRatio(16f/9f)`），
+  右边露出下一张一角；缺图 / 死链改走 `PosterImage` 骨架（必须放 `Box` 叠放两节点），不再留灰板。
+- 新增 `RelatedWorksRow`（剧照下方）：248×96dp 横滑卡片，左侧 54dp 竖版海报 + 片名 / ★评分·年份 / 两行简介，
+  `indication = null`；点卡片经新增的 `onOpenRelated` 回调由 `AppNavigation` 两个 detail 路由接走，
+  复用 `detail/tmdb/{type}/{id}`。**与剧照共用 `entranceMotion(order = 6)`，不新增入场组**。
+- **删除底部整行**「离线缓存 / DLNA投屏 / 分享」三个 `DetailAction` 及 `DetailAction` 函数本身、
+  三个 icon 与 `ImageVector` import。`EntranceGroupCount = 8` **保持不变**，order = 7 留空槽，
+  整条 600ms 入场编排一个数字没动（高频雷区）。
+- 新增 `EpisodeCards`：**只在 `episodeInfos` 非空时**出现，播放态与浏览态各挂在 `EpisodeChips` 之后。
+  236dp 横滑卡片 = 16:9 分集剧照 + 播出日期 + 「第 N 集 · X 分钟」+ 集名 + 简介。
+  简介 `maxLines = 2`，`onTextLayout` 记录 `hasVisualOverflow`，**点简介文字本身**在 2 行 ↔ 12 行间展开/收起，
+  没有「查看全文」之类任何提示按钮；外层卡片点其它区域仍是 `startPlayback + onPlayEpisode` 播该集
+  （内层 `clickable` 优先消费简介点击）。选中集用 1dp 淡描边，不铺底色。
+  集号先按 `episodeId` 取，取不到按列表顺序兜底；完全没有资料的集不出卡片，选集 chips 与播放逻辑零改动。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL（32s，一次通过，仅 1 条无关的 `OpenInNew` 弃用警告）
++ `adb install -r` Success（01:58），已装机。改动文件：`TmdbModels.kt` / `TmdbRepository.kt` /
+`MovieDetailScreen.kt` / `AppNavigation.kt` / `tools/tmdb-proxy/worker.js`。
+待入库文件复核无 JWT 明文。**02:45 用户验收通过，ROADMAP 已勾，随本轮提交推送**（全程按约定未自测 / 未截图，验收由用户发起）。
+
+---
+
+### 8.30 演员页层级重排 + 倾斜传送带海报墙 + 社交跳转（2026-11-08 02:06 装机，用户自测中）
+
+> ⚠️ **02:22 覆盖**：本节「背景墙」小节的**「两遍首尾拼接 + 整块一次性平移 + 6 列 × 6 张 × 1.7 倍」**
+> 与 **`headerHeight = 0.62` 屏高、A 层只占 `headerHeight`** 全部作废 —— 真机上整块内容移出可见区后
+> 第二组补不进来，演员上方整片露白（用户截图反馈）。以 **8.31** 的逐格取模方案为准。
+> 人物信息与时间轴同层、X/IG 跳转、三层遮罩、渐变终点不透明 background 等结论仍然有效。
+
+**需求**（用户 02:02 口述）：① 演员信息和下面时间轴放在**同一个层级**，刚进入时这个层级**更靠屏幕下一些**；
+② 该演员有 X / Instagram 信息时**点击可以跳转**；③ 背景墙整体**逆时针旋转约 -15°**；
+④ 墙没有做任何对角线计算，只是**顺着自己内部 Y 轴向上匀速平移**，倾斜后看起来是向左上方斜向滑动；
+⑤ 移动由**独立时间动画**驱动、与手指无关，靠**取模 / 首尾拼接**让最上面一排滑出后从最下方重新出现，无限无缝循环；
+⑥ 拼接方式是**多个垂直列**的超大网格，相邻列有**固定初始 Y-Offset**形成砖块交错。
+
+**层级（覆盖 8.28 的旧描述，三层遮罩不动）**
+- A 层 `PersonHeader` **只剩海报墙 + 渐变 + 加载转圈**：固定底层、自身不位移不淡出，整屏 `surface` 遮罩
+  （`veilProgress = scrolled / (0.9 × headerHeightPx)`，01:45 定案）仍按滚动均匀淡入。
+- B 层 `LazyColumn` **完全透明**，顺序为：第 0 项等高透明 `Spacer` → **第 1 项新增 `PersonInfoBlock`**
+  （96×128 头像 + 姓名 + 「N 部作品」+ X / IG）→ 时间轴行 / 空态。
+  即人物信息与时间轴**同为列表项、一起随手指滚动**，不再压在 A 层墙上被遮罩盖掉。
+- `headerHeight` 由 `screenHeightDp × 0.52`（360~520dp）改成 **`× 0.62`（420~600dp）**：
+  A 层墙高与 B 层占位等高，人物信息正好从墙的下缘（渐变已收敛成纯 `background`）开始，
+  文字直接用 `onSurface / onSurfaceVariant`，不画任何背景块，浅色 / 深色都读得清。
+
+**背景墙 `PosterCollage`（整段重写）**
+- 静态 `graphicsLayer { rotationZ = -15f; scaleX/scaleY = 1.7f }` 加在整个网格容器上。
+  放大是为了让旋转后的四角仍被海报覆盖、绝不露底色；**渐变层不跟着转**。
+- 不做对角线计算：唯一动画是 `Row` 的 `graphicsLayer { translationY = -drift.value × 一组高度 }`，
+  沿容器自身 Y 轴**匀速向上**；容器本身是斜的，用户看到的就是向左上方的斜向流动。
+  `rememberInfiniteTransition` + `tween(38_000, LinearEasing)` + **`RepeatMode.Restart`**，与列表 / 手指完全无关。
+- **无缝循环**：每列把同一组海报**首尾拼接渲染两遍**（`row % perColumn` 保证第 7~12 张复刻第 1~6 张），
+  一组 = 6 张 × (144dp + 10dp) = **924dp**，两遍 ≈ 1838dp；向上平移恰好一组高度后 Restart 回 0，
+  两组内容完全一致 → 重启瞬间没有跳帧（等价于取模传送带）。任何 drift 值下可见区域都被盖满。
+- **交错列拼接**：6 个垂直 `Column`（每列 96dp 宽、2:3 海报 96×144dp、10dp 间距），
+  奇数列用静态 `offset(y = -77dp)` 整体上移半张形成砖块错落；**负偏移**是为了平移时顶部永远有海报。
+- 海报取年表前 **30 张**（原 18 张）`posterSmall`（w185），缺图仍走 `PosterImage` 垫 Muted Palette 骨架；
+  每个 tile 都包 `Box` 叠放 `PosterImage` 的两个节点。
+- **动画读取位置更正**：这次传的是 `State<Float>` 的**引用**，只在唯一一个 `graphicsLayer` 的 draw 阶段读 `.value`，
+  70 多个 tile **不参与每帧重组**、只重绘一层变换。01:39 判「墙不动」的真实原因是幅度太小（60px / 42s），
+  不是 State 订阅失效 —— 这次单程 924dp / 38s 位移足够明显。8.28 / TECH_NOTES 19 里
+  「必须在 composition 层读成普通 Float」那句作废。
+
+**社交跳转**
+- `TmdbPersonProfile.twitterId / instagramId` 来自 `external_ids`，**有值才显示**；
+  `SocialHandle` 用下划线 + `↗` 提示可点，关 ripple，不画背景块（避免 B 层出现长方块）。
+- `openSocialLink()` 去 `@` 前缀 → `https://x.com/{id}` / `https://www.instagram.com/{id}/`，
+  `Intent.ACTION_VIEW` + `FLAG_ACTIVITY_NEW_TASK` + `runCatching`，交给系统决定开 App 还是浏览器。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL（20s，一次通过）+ `adb install -r` Success（02:06）。
+改动**只落在 `ui/person/PersonTimelineScreen.kt` 一个文件**（TMDB 数据层 / 导航 / 公共组件均未动，
+社交字段本来就由 8.28 的数据层带出）。待入库文件复核无 JWT 明文。
+**02:45 用户验收通过，ROADMAP 已勾，随本轮提交推送**（全程按约定未自测 / 未截图，验收由用户发起）。
+**02:22 追记**：用户真机截图反馈上半屏一片灰白、演员头像上方全空 → 见 8.31。
+
+---
+
+### 8.31 演员页露白修复：逐格取模传送带 + 墙铺满全屏（2026-11-08 02:22 装机，用户自测中）
+
+**用户反馈（附截图）**：① 演员位置太靠下，头像背景一开始是纯白、上方整片空白；
+② 海报墙一移动就变白，**「独立于前景的无限循环 / 首尾拼接」并没有实现**。
+
+**根因（两条叠加）**
+- 02:06 的 `PosterCollage` 是「每列 12 张超高 `Column` + 整块 `Row` 一次性 `translationY` 平移」，
+  1838dp 高的子 layer 在旋转 / 缩放的父 layer 里被裁掉，内容移出可见区后第二组补不进来 → 露白。
+- A 层 `PersonHeader` 只占 `headerHeight`（0.62 屏高），渐变终点又是不透明背景色，
+  于是头像上方本来就是「墙没画出来 + 渐变」的一整块灰白。
+- 另一条隐患：海报 URL 全空时 `PosterCollage` 直接铺一整片全屏 `PosterPlaceholder`，
+  那只是一块平滑渐变白板，没有网格、也看不出流动 —— 截图观感与它完全一致。
+
+**修法（仍只改 `ui/person/PersonTimelineScreen.kt`）**
+- **逐格取模，替代整块拼接**：`y = ((baseY - drift × 周期) mod 周期)`，每格用
+  `Modifier.offset { }` 的 **layout 阶段** lambda 读 `State<Float>.value` 定位（只重放 offset、不重组）。
+  周期 = 5 格 × 154dp = **770dp**；7 个垂直列 × 每列 5 格 = **35 个 tile**（原 72 个），
+  奇数列 `baseY` 错开半格形成砖块交错。滑出上边界的那一格立刻从循环底部补回，
+  可见区（倾斜缩放后约 y ∈ [157, 643]dp）任何 drift 下都铺满；`drift=1` 与 `drift=0` 的
+  取模结果完全相同 → `RepeatMode.Restart` 零跳帧。仍是 38s 单程 `LinearEasing` 时间动画、与手指无关。
+- **墙铺满全屏**：A 层 `PersonHeader` 从 `.height(headerHeight)` 改 `fillMaxSize()`，
+  放大 1.7 → **1.8 倍**、旋转仍 -15°。
+  ❌ **本节「渐变在 B 层占位（0.56）附近收敛成不透明 background」已于 02:31 作废** ——
+  用户截图指出那样会从演员头像中部就开始发白；改为「白纱起点精确对齐时间轴首行」，见 **8.32**。
+  「渐变终点必须不透明 background」这条本身仍成立。
+- **演员上移**：`headerHeight` 从 `0.62`（420~600dp）回到 **`0.50`（360~480dp）**，
+  B 层占位与人物信息整体上移约一截。
+- **空数据保险**：`posters` 为空不再 early-return 整片骨架，改用 `urls = listOf("")` 照常铺 35 格，
+  每格走 `PosterImage` 的 Muted Palette 骨架（`seed = "wall-$col-$row"` 保证相位错落）。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL（20s，一次通过）+ `adb install -r` Success（02:22）。
+三层遮罩、B 层全透明、X/IG 跳转、时间轴行、评分并入类型行均未动。
+待入库文件复核无 JWT 明文。**02:45 用户验收通过，ROADMAP 已勾，随本轮提交推送**（全程按约定未自测 / 未截图，验收由用户发起）。
+**02:31 追记**：用户反馈「背景从演员中部就开始模糊，希望从时间轴开始的位置才模糊」→ 见 8.32。
+
+---
+
+### 8.32 演员页白纱起点对齐时间轴首行（2026-11-08 02:31 装机，02:45 验收通过）
+
+**用户反馈（附截图）**：海报墙从**演员头像中部**就开始变白/发糊，红圈标出头像与姓名周围那圈白雾；
+要求「从时间轴开始的位置才模糊」—— 即演员头像 / 姓名 / 作品数 / X·IG 整块后面都应是清晰海报，
+白化只在时间轴首行以下出现。
+
+**根因**：8.31 的 A 层渐变用了整屏相对 stop（`0.34 黑0.26 → 0.56 不透明 background`），
+`0.34 ~ 0.56` 正好落在头像中部到姓名之间；而且 stop 从「半透明黑」插值到「不透明白」，
+RGB 一起变化，中间态掺出灰雾 —— 用户看到的「模糊」其实是这层灰白纱，不是真的 blur。
+
+**定案（02:31）**：渐变拆成互不重叠的两层，都在 `PersonHeader` 里、都不跟着列表滚动。
+1. **顶部压暗**：`Brush.verticalGradient` 的 `startY = 0f / endY = fadeStartPx × 0.5f`，
+   `黑 0.34 → 黑 0.10 → 黑 alpha 0`，之后 clamp 成全透明，只负责状态栏图标可读。
+2. **底部白纱**：`startY = fadeStartPx`（**时间轴首行的 y**），`endY = fadeStartPx + 120dp`，
+   颜色只从 `background.copy(alpha = 0f)` 到不透明 `background` —— **只变 alpha、不变 RGB**，
+   所以没有灰雾；终点之后 clamp 保持纯色，时间轴文字仍落在纯背景上，首屏零接缝。
+
+**`fadeStartPx` 怎么来**：`headerHeightPx`（等高占位）+ `infoBlockHeightPx`。
+后者由 `PersonInfoBlock` 外层 `Modifier.onGloballyPositioned { it.size.height }` 实测，
+初值 268dp 兜底 —— 有无 X/IG、字体缩放、不同机型都自动对齐，不写死屏高比例。
+高度不随滚动变化，所以回调不会造成反复重组。
+
+**人物信息文字（配套改）**：既然压在清晰海报上就不能再用 `onSurface` 深色字。
+`PersonInfoBlock` 用 `lerp(Color.White, primary, veil)` / `lerp(白 0.82, secondary, veil)`，
+首屏白字 + `Shadow(黑 0.55, offset(0,2), blur 8)`；用户上滑时整屏 `surface` 遮罩淡入，
+文字同步过渡到深色，不会「白字掉进白底」。社交链接同样带阴影，下划线 + ↗ 与跳转逻辑不变。
+
+**状态**：`assembleDebug` BUILD SUCCESSFUL（14s；中途修了一个 `LocalTextStyle` 的包名 ——
+它在 `androidx.compose.material3` 而不是 `androidx.compose.ui.text`）+ `adb install -r` Success（02:31）。
+改动**只落在 `ui/person/PersonTimelineScreen.kt` 一个文件**：三层遮罩、墙的取模传送带、
+B 层全透明、时间轴行、X/IG 跳转全部未动。待入库文件复核无 JWT 明文。
+**02:45 用户验收通过，ROADMAP 已勾，随本轮提交推送**（全程按约定未自测 / 未截图，验收由用户发起）。
+
+---
+
+### 8.33 收尾两批 + 批量验收（2026-11-08 02:34 / 02:40 装机，02:45 验收通过）
+
+**02:34 白纱过渡上移**（只改 `ui/person/PersonTimelineScreen.kt`）：用户「模糊效果过渡下调了，
+再往上一点，大概在时间轴刚开始的位置」。02:31 把 `startY` 精确设成 `fadeStartPx` 后，
+120dp 过渡整段压在时间轴首行**下方**、首行上半还透着清晰海报，观感偏低。改法**不是**把起点
+写回屏高比例（会重演 8.31「演员中部发白」），而是整段渐变前移固定 88dp：
+`gradientStartPx = (fadeStartPx - 88.dp).coerceAtLeast(0f)`，`startY = gradientStartPx`、
+`endY = gradientStartPx + 120.dp` → 首行顶端约 73% 不透明、再 32dp 完全纯色，
+起点仍在头像下方且 alpha≈0。顶部压暗层、整屏 `surface` 遮罩、取模墙、B 层全透明均未动。
+
+**02:40 选集胶囊条件化**（只改 `ui/detail/MovieDetailScreen.kt`）：用户截图指出「第01/02/03/04 集」
+胶囊与下方分集剧照卡片重复，要求刮削出每集简介和内容时取消、没刮削出来就保留。定案拆两个布尔：
+- `showEpisodeCards = episodeInfos.isNotEmpty()` —— 卡片显示条件保持原样。
+- `hideEpisodeChips = episodeInfos 非空 && currentRoute.episodes.withIndex().all { 按 episodeId 或 index+1 命中 info } && 至少一条 info 带 overview/stillUrl`，`remember(episodeInfos, currentRoute)` 缓存。
+
+**必须是 `all` 不是 `any`**：`episodeInfos()` 最多取 3 季、连续编号只覆盖到源站集数；
+若 TMDB 只覆盖前 8 集而源站有 20 集，撤掉胶囊会让后 12 集彻底失去选集入口。
+浏览态与播放态两处 `EpisodeChips` 都包 `if (!hideEpisodeChips)`；播放态「选集」标题**保留**
+（`FavoriteToggle` 挂在 trailing，不能一起删），胶囊隐藏后卡片不再叠 16dp。
+
+**02:45 批量验收**：01:07 ~ 02:40 共 11 批改动一次性验收通过，ROADMAP 四条补充迭代
+（含 01:39 / 01:45 / 02:06 / 02:22 / 02:31 / 02:34 / 02:40 全部追记）已勾、CHANGELOG 已收口，
+随本轮提交推送。详见 CHANGELOG 02:45 条与 TECH_NOTES 20 / 23。
+
+**遗留（不属于本轮代码）**
+1. 公开历史 `b93037a` 里的旧 TMDB 明文 token 仍在 public 仓库（含 fork），用户决定
+   **不重写历史 / 不 force push**；**必须到 TMDB 后台撤销或轮换**，代码清空不能让旧串失效。
+   `local.properties` 被 `.gitignore` 忽略，入库版只有 `YOUR_TMDB_V4_READ_ACCESS_TOKEN_HERE`。
+2. `app/src/main/res/drawable-nodpi/channel_logo_default.webp` 无代码引用，本次未入库，等用户决定是否清理。
+3. `docs/` / `CHANGELOG.md` / `/.workbuddy/` 是本地私密文档，绝不 `git add -f` 强推。
+4. 线上 TMDB Worker 未部署（用户明确 APK 直连 TMDB），白名单改动仅作备用路径。
+
 ---
 
 ## 九、构建、部署与调试
@@ -644,7 +1014,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 **已知问题**
 1. ~~设置页「MPV 高性能解码内核」开关是纯 UI 占位~~ —— **已彻底清除，2026-11-07 19:0x 提交 `c9bea6b`**。演进是两段：`a5d8044` 先把假开关降级成「只读状态行」（固定 Media3 ExoPlayer + 徽章），用户随后指出「既然固定，为什么要在设置里占一行」；`c9bea6b` 把该行整块删除，卡片由「播放内核与视频增强」改名「播放设置」，只剩画中画小窗、后台播放两个真开关。**结论：设置页不应出现不可配置的常量**，内核信息只保留在文档与代码注释里。真双核（Step 3.1）用户已明确跳过；若将来要做，得先引入 IJK / MPV 依赖与 `Player` 抽象层，届时再加回真开关。
 2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
-3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
+3. ~~演职人员、剧照仍是测试数据占位~~ —— **已接 TMDB 真刮削，2026-11-08 02:45 验收通过**（见 8.16 / 8.26~8.33）。剩余：**预告片未接入**，要做需补 `/3/{type}/{id}/videos` 与播放入口；演职人员只做 cast + 主要 crew，不展示全部幕后名单。
 4. **手势单击有 ~300ms 延迟**（`onDoubleTap` 的 Compose 固有行为，见 10.1）。用户未表态是否接受，嫌钝就改手写 tap 检测。
 5. **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合已于 2026-11-07 逐条真机验收通过**（用户 18:2x 明确「验证通过」），ROADMAP 对应条目已勾。原记录的「未实测」作废。
 6. 首页部分海报偶发灰底不显示（图片 CDN 问题，查 `MB-IMG`）。
@@ -679,4 +1049,4 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - Step 3.1 双核解码：**用户已明确跳过**，不再排期。
 - Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）。
 - Step 4.1 Spider 调度 / 4.2 去广告 + TMDB 刮削 / 4.3 离线下载：均卡在外部前置（爬虫执行环境、TMDB key 与广告样本、WorkManager），排在 3.x 之后。
-- **Step 4.2 拆开看**：TMDB 刮削部分已完成（见 8.16，提交 `b93037a`，等用户自测）；同一 Step 里的**去广告切片尚未开始**，仍缺广告样本。
+- **Step 4.2 拆开看**：TMDB 刮削部分已完成并**2026-11-08 02:45 验收通过**（见 8.16 / 8.26~8.33，本轮提交）；同一 Step 里的**去广告切片尚未开始**，仍缺广告样本。

@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,10 +32,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -41,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +67,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.damon.mobilebox.data.search.SearchHistoryStore
 import com.damon.mobilebox.data.tvbox.SearchHit
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.PosterImage
@@ -92,10 +98,13 @@ fun SearchScreen(
     var loading by remember { mutableStateOf(false) }
     var searched by remember { mutableStateOf(SearchMemory.searched) }
     var results by remember { mutableStateOf(SearchMemory.results) }
+    // 最近搜索是持久化的，杀进程再进仍在；订阅点只有这一处，用 collectAsState() 不带 initial
+    val recent by SearchHistoryStore.history.collectAsState()
 
     fun submit(word: String = keyword) {
         val w = word.trim()
         if (w.isEmpty() || loading) return
+        SearchHistoryStore.add(w)
         keyboard?.hide()
         scope.launch {
             loading = true
@@ -205,10 +214,25 @@ fun SearchScreen(
 
             searched -> EmptyHint("没有找到「$keyword」", "换个片名或只输入两个字试试")
 
-            else -> EmptyHint(
-                title = "搜索全部订阅站点",
-                subtitle = "输入片名，点击「搜索」后同时查询所有采集源"
-            )
+            else -> Column(modifier = Modifier.fillMaxSize()) {
+                if (recent.isNotEmpty()) {
+                    RecentSearches(
+                        words = recent,
+                        onPick = { word ->
+                            keyword = word
+                            submit(word)
+                        },
+                        onRemove = { SearchHistoryStore.remove(it) },
+                        onClear = { SearchHistoryStore.clear() }
+                    )
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    EmptyHint(
+                        title = "搜索全部订阅站点",
+                        subtitle = "输入片名，点击「搜索」后同时查询所有采集源"
+                    )
+                }
+            }
         }
     }
 }
@@ -395,6 +419,70 @@ private fun EmptyHint(title: String, subtitle: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+/**
+ * 未搜索时的「最近搜索」：最多 10 条，点 chip 直接回填并重搜，右侧 × 删单条，右上角清空。
+ * 只在空状态出现，结果页不叠一层挡住海报行。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RecentSearches(
+    words: List<String>,
+    onPick: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "最近搜索",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            TextButton(onClick = onClear) {
+                Text("清空", fontSize = 12.sp)
+            }
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            words.forEach { word ->
+                InputChip(
+                    selected = false,
+                    onClick = { onPick(word) },
+                    label = {
+                        Text(
+                            text = word,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    trailingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "删除「$word」",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable { onRemove(word) }
+                        )
+                    }
+                )
+            }
+        }
     }
 }
 

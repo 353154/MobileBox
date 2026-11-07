@@ -75,13 +75,17 @@ async function serveThumb(key) {
 /** 只放行读接口。新增调用之前先在这里加白名单，别图省事放开通配。 */
 const ALLOWED_PATHS = [
   /^\/3\/configuration$/,
-  /^\/3\/search\/(movie|tv|multi)$/,
+  /^\/3\/search\/(movie|tv|multi|person)$/,
+  // 演员作品年表：按 id 取 combined_credits / external_ids。
+  /^\/3\/person\/\d+$/,
   /^\/3\/trending\/(all|movie|tv)\/(day|week)$/,
   // 首页横滑榜单：正在热映 / 正在播出 / 高分 / 热门。
   /^\/3\/movie\/(now_playing|upcoming|popular|top_rated)$/,
   /^\/3\/tv\/(on_the_air|airing_today|popular|top_rated)$/,
   /^\/3\/(movie|tv)\/\d+$/,
   /^\/3\/(movie|tv)\/\d+\/(credits|images|videos|similar|recommendations)$/,
+  // 详情页分集剧照 / 简介：/3/tv/{id}/season/{n}（tv 详情本体由上面的 \d+ 规则放行）。
+  /^\/3\/tv\/\d+\/season\/\d+$/,
   /^\/3\/genre\/(movie|tv)\/list$/,
   // 分类页：按类型拉片单（with_genres）。只放行 discover 本体，参数由 App 决定。
   /^\/3\/discover\/(movie|tv)$/,

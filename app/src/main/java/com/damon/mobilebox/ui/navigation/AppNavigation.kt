@@ -23,6 +23,7 @@ import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.SharedPosterTransition
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import com.damon.mobilebox.ui.main.AnimatedMainScreen
+import com.damon.mobilebox.ui.person.PersonTimelineScreen
 import com.damon.mobilebox.ui.player.PipController
 import com.damon.mobilebox.ui.profile.WatchListScreen
 import com.damon.mobilebox.ui.profile.WatchListType
@@ -147,7 +148,19 @@ fun AppNavigation(themeManager: ThemeManager) {
                     resumeEpisodeId = resumeEpisodeId,
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onPersonClick = { personId, personName ->
+                        val encodedName = try { URLEncoder.encode(personName, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate("person/$personId?name=$encodedName")
+                    },
+                    onOpenRelated = { work ->
+                        // 相关作品也是 TMDB 片，复用轮播那条详情路由。
+                        val encodedTitle = try { URLEncoder.encode(work.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(work.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate(
+                            "detail/tmdb/${work.mediaType}/${work.tmdbId}?title=$encodedTitle&poster=$encodedPoster"
+                        )
+                    }
                 )
             }
             composable(
@@ -182,7 +195,45 @@ fun AppNavigation(themeManager: ThemeManager) {
                     tmdbId = tmdbId,
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onPersonClick = { personId, personName ->
+                        val encodedName = try { URLEncoder.encode(personName, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate("person/$personId?name=$encodedName")
+                    },
+                    onOpenRelated = { work ->
+                        // 相关作品也是 TMDB 片，复用轮播那条详情路由。
+                        val encodedTitle = try { URLEncoder.encode(work.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(work.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate(
+                            "detail/tmdb/${work.mediaType}/${work.tmdbId}?title=$encodedTitle&poster=$encodedPoster"
+                        )
+                    }
+                )
+            }
+            // 演员作品时间轴：详情页点头像、确认 TMDB 有资料后才走到这里。
+            composable(
+                route = "person/{personId}?name={name}",
+                arguments = listOf(
+                    navArgument("personId") { type = NavType.IntType },
+                    navArgument("name") { type = NavType.StringType; defaultValue = "" }
+                )
+            ) { backStackEntry ->
+                val personId = backStackEntry.arguments?.getInt("personId") ?: 0
+                val rawName = backStackEntry.arguments?.getString("name").orEmpty()
+                val personName = try { URLDecoder.decode(rawName, "UTF-8") } catch (_: Exception) { rawName }
+                PersonTimelineScreen(
+                    personId = personId,
+                    initialName = personName,
+                    onBack = { navController.popBackStack() },
+                    onOpenWork = { work ->
+                        // 年表里的条目都是 TMDB 片，直接复用首页轮播那条详情路由，
+                        // 详情页会自己按 type + id 补元数据并回订阅源搜可播线路。
+                        val encodedTitle = try { URLEncoder.encode(work.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(work.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate(
+                            "detail/tmdb/${work.mediaType}/${work.tmdbId}?title=$encodedTitle&poster=$encodedPoster"
+                        )
+                    }
                 )
             }
             composable(

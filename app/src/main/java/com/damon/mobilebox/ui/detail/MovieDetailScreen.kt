@@ -3,6 +3,7 @@ package com.damon.mobilebox.ui.detail
 import android.app.Activity
 import android.content.res.Configuration
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -15,6 +16,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -26,10 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Cast
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -44,7 +43,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
@@ -61,13 +59,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
+import com.damon.mobilebox.data.tmdb.TmdbEpisodeInfo
 import com.damon.mobilebox.data.tmdb.TmdbMeta
+import com.damon.mobilebox.data.tmdb.TmdbRelatedWork
 import com.damon.mobilebox.data.tmdb.TmdbRepository
 import com.damon.mobilebox.data.tmdb.TmdbSourceFinder
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.watch.FavoriteItem
 import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.ui.components.AmbientBackdrop
+import com.damon.mobilebox.ui.components.PosterImage
 import com.damon.mobilebox.ui.components.StandardDialog
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
@@ -156,9 +157,42 @@ fun MovieDetailScreen(
     /** 从观看历史进入时要自动起播的集数；>0 才会触发自动播放。 */
     resumeEpisodeId: Int = 0,
     onPlayEpisode: (VideoEpisode) -> Unit = {},
-    onShowToast: (String) -> Unit = {}
+    onShowToast: (String) -> Unit = {},
+    /**
+     * 点头像展开演员作品时间轴：`(personId, name)`。
+     * 由导航层接走；详情页自己先查 TMDB，查不到就不调用（不展开空页面）。
+     */
+    onPersonClick: (Int, String) -> Unit = { _, _ -> },
+    /** 相关作品卡片：由导航层接走，复用 `detail/tmdb/{type}/{id}` 进影片详情。 */
+    onOpenRelated: (TmdbRelatedWork) -> Unit = {}
 ) {
     val context = LocalContext.current
+
+    // ---- 演职人员 → 作品年表 ----
+    // 点击后先预查一次 TMDB：查得到才展开时间轴页，顺便把资料填进进程缓存，
+    // 让新页面首帧就有内容；查不到只弹一句提示，不留一个空壳页面。
+    val personScope = rememberCoroutineScope()
+    val personBusy = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    var pendingPerson by remember { mutableStateOf<String?>(null) }
+    fun openPerson(person: TmdbPerson) {
+        if (!personBusy.compareAndSet(false, true)) return
+        pendingPerson = person.name
+        personScope.launch {
+            try {
+                val profile = runCatching {
+                    TmdbRepository.personProfile(person.personId, person.name)
+                }.getOrNull()
+                if (profile != null) {
+                    onPersonClick(profile.personId, profile.name.ifBlank { person.name })
+                } else {
+                    Toast.makeText(context, "TMDB 暂无该演职人员的作品资料", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                pendingPerson = null
+                personBusy.set(false)
+            }
+        }
+    }
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val density = LocalDensity.current
@@ -289,6 +323,28 @@ fun MovieDetailScreen(
     // 一条线路解码失败时可以直接换另一家站，不用退出去重新搜。
     // 异步追加不阻塞首屏：先展示当前站线路，查到再补。
     var mergedData by remember { mutableStateOf(finalData) }
+
+    // ---- 详情页增强：相关作品 / 分集剧照与简介（异步，不阻塞首屏）----
+    // 两份数据都不进 TmdbMeta / 磁盘缓存：只在进程内按 id 缓存 6h；
+    // 拿不到就整块隐藏，选集 chips 照旧保留、播放逻辑完全不受影响。
+    var relatedWorks by remember(movieId) { mutableStateOf(emptyList<TmdbRelatedWork>()) }
+    var episodeInfos by remember(movieId) { mutableStateOf(emptyMap<Int, TmdbEpisodeInfo>()) }
+    val episodeCountForMeta = mergedData.routes.firstOrNull()?.episodes?.size ?: 0
+    LaunchedEffect(tmdbMeta?.tmdbId, tmdbMeta?.mediaType) {
+        val meta = tmdbMeta ?: return@LaunchedEffect
+        relatedWorks = runCatching {
+            TmdbRepository.relatedWorks(meta.mediaType, meta.tmdbId)
+        }.getOrNull().orEmpty()
+    }
+    LaunchedEffect(tmdbMeta?.tmdbId, tmdbMeta?.mediaType, episodeCountForMeta) {
+        val meta = tmdbMeta ?: return@LaunchedEffect
+        // 电影 / 单集没有分集资料；只有 TV 且多集才去拉 season。
+        if (meta.mediaType != "tv" || episodeCountForMeta <= 1) return@LaunchedEffect
+        episodeInfos = runCatching {
+            TmdbRepository.episodeInfos(meta.tmdbId, episodeCountForMeta)
+        }.getOrNull().orEmpty()
+    }
+
     LaunchedEffect(finalData) {
         mergedData = finalData
         if (finalData.routes.isEmpty() || finalData.title.isBlank()) return@LaunchedEffect
@@ -435,7 +491,7 @@ fun MovieDetailScreen(
     // 详情页首帧一次性组合全部 8 组内容（4 个 LazyRow、十余个 Chip、按钮与图标），
     // 叠加共享元素转场 Overlay 的首次创建，单个组合/测量帧远超一个 vsync：
     // 实测冷启首次进详情页最慢一帧 150ms，转场中间帧根本没画出来，直接跳到终点。
-    // 首帧只保留首屏可见的前 3 组；后 5 组（演职人员/分类/预告片/剧照/操作行）
+    // 首帧只保留首屏可见的前 3 组；后 5 组（演职人员/分类/预告片/剧照·相关作品/已删操作行空槽）
     // 在入场动画全程都位于屏幕之外，等入场跑完再组合 —— 停顿落在画面静止的一帧上。
     // 注意：不要把这些组再拆成"每帧一组"去摊 —— 每加一组整帧就涨到 30~50ms，
     // 转场会从"一帧跳到终点"退化成 30fps 的多次跳跃（实测更差）。
@@ -494,6 +550,21 @@ fun MovieDetailScreen(
     val currentRoute = mergedData.routes.getOrNull(selectedRouteIndex)
         ?: mergedData.routes.firstOrNull()
         ?: EmptyRoute
+
+    // 02:40 定案（用户截图反馈）：TMDB 刮削到「每集」分集资料时，第01集/第02集…胶囊
+    // 与下面的剧照 + 简介卡片功能重复，隐藏胶囊，选集完全交给可点击的卡片。
+    // 判定口径与 EpisodeCards 内部取数一致（先按集号取、再按列表顺序兜底），并且用 all：
+    // 只要有一集没匹配上资料就必须保留胶囊，否则那几集会彻底失去选集入口。
+    // 另外要求至少有一条资料带简介或剧照，避免 TMDB 只回了空壳记录就把胶囊撤掉。
+    val showEpisodeCards = episodeInfos.isNotEmpty()
+    val hideEpisodeChips = remember(episodeInfos, currentRoute) {
+        episodeInfos.isNotEmpty() && currentRoute.episodes.isNotEmpty() &&
+            currentRoute.episodes.withIndex().all { (index, ep) ->
+                episodeInfos.containsKey(ep.episodeId) || episodeInfos.containsKey(index + 1)
+            } &&
+            episodeInfos.values.any { it.overview.isNotBlank() || it.stillUrl.isNotBlank() }
+    }
+
     // 刻意不以 selectedRouteIndex 作 remember key：自动换源是在组合之外的回调里写这个状态，
     // 带 key 的话下一次重组会重建 State、把刚写进去的「同一集」覆盖回第一集。
     // 切线路统一由 onSelect / startPlayback / onSourceFailed 显式重置。
@@ -982,14 +1053,31 @@ fun MovieDetailScreen(
                                         )
                                     })
                                     Spacer(modifier = Modifier.height(12.dp))
-                                    EpisodeChips(
-                                        episodes = currentRoute.episodes,
-                                        selectedId = selectedEpisodeId,
-                                        onClick = { ep ->
-                                            startPlayback(ep)
-                                            onPlayEpisode(ep)
-                                        }
-                                    )
+                                    // 02:40：每集都刮削到资料时胶囊与卡片重复，隐藏胶囊。
+                                    // 「选集」标题必须保留 —— 追剧按钮挂在标题右侧，不能一起删。
+                                    if (!hideEpisodeChips) {
+                                        EpisodeChips(
+                                            episodes = currentRoute.episodes,
+                                            selectedId = selectedEpisodeId,
+                                            onClick = { ep ->
+                                                startPlayback(ep)
+                                                onPlayEpisode(ep)
+                                            }
+                                        )
+                                    }
+                                    // 有 TMDB 分集资料才出现：每集剧照 + 简介横滑卡片。
+                                    // 胶囊隐藏时卡片直接接在标题后（沿用上面 12dp），不再叠 16dp。
+                                    if (showEpisodeCards) {
+                                        EpisodeCards(
+                                            episodes = currentRoute.episodes,
+                                            infos = episodeInfos,
+                                            selectedId = selectedEpisodeId,
+                                            onClick = { ep ->
+                                                startPlayback(ep)
+                                                onPlayEpisode(ep)
+                                            }
+                                        )
+                                    }
                                     Spacer(modifier = Modifier.height(22.dp))
                                 }
                                 // 单线路也要显示：用户要能看出「当前用的是哪个站点/哪条源」，
@@ -1050,29 +1138,44 @@ fun MovieDetailScreen(
                                 if (mergedData.routes.isEmpty()) {
                                     // TMDB 入口在搜到源之前 / 确实搜不到，都走这里。
                                     // 未搜完不叫「没有」，两者的文案必须分开，否则用户会以为坏了。
-                                    Text(
-                                        text = when (sourceState) {
-                                            SourceLookup.Searching -> "正在搜索播放源…"
-                                            SourceLookup.NotFound -> "订阅源里没找到这部片的播放地址"
-                                            else -> "暂时没有可用的播放源"
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = LocalBTextColors.current.primary.copy(alpha = 0.7f),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 6.dp)
-                                    )
-                                    if (sourceState == SourceLookup.NotFound) {
-                                        Text(
-                                            text = "换一个订阅源，或在首页搜索片名看看",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = LocalBTextColors.current.primary.copy(alpha = 0.5f),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
+                                    // 搜索中额外挂一枚转圈：原来只有一行静态文字，看着像卡住了。
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 6.dp)
+                                        ) {
+                                            if (sourceState == SourceLookup.Searching) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = LocalBTextColors.current.primary.copy(alpha = 0.7f)
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                            }
+                                            Text(
+                                                text = when (sourceState) {
+                                                    SourceLookup.Searching -> "正在搜索播放源…"
+                                                    SourceLookup.NotFound -> "订阅源里没找到这部片的播放地址"
+                                                    else -> "暂时没有可用的播放源"
+                                                },
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = LocalBTextColors.current.primary.copy(alpha = 0.7f)
+                                            )
+                                        }
+                                        if (sourceState == SourceLookup.NotFound) {
+                                            Text(
+                                                text = "换一个订阅源，或在首页搜索片名看看",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = LocalBTextColors.current.primary.copy(alpha = 0.5f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
                                     }
                                 } else {
-                                // 「追剧」紧贴「立即播放」：同一部片的两个主操作并排，
-                                // 底部操作行回到纯工具条（缓存 / 投屏 / 分享）。
+                                // 「追剧」紧贴「立即播放」：同一部片的两个主操作并排。
+                                // 底部那条「缓存 / 投屏 / 分享」工具行已整体删除，页面不再有第二组操作按钮。
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Button(
                                         onClick = {
@@ -1117,14 +1220,30 @@ fun MovieDetailScreen(
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(16.dp))
-                                EpisodeChips(
-                                    episodes = currentRoute.episodes,
-                                    selectedId = selectedEpisodeId,
-                                    onClick = { ep ->
-                                        startPlayback(ep)
-                                        onPlayEpisode(ep)
-                                    }
-                                )
+                                // 02:40：有分集资料时胶囊与卡片重复，隐藏胶囊；
+                                // 卡片直接接在「立即播放」下方，沿用上面这 16dp。
+                                if (!hideEpisodeChips) {
+                                    EpisodeChips(
+                                        episodes = currentRoute.episodes,
+                                        selectedId = selectedEpisodeId,
+                                        onClick = { ep ->
+                                            startPlayback(ep)
+                                            onPlayEpisode(ep)
+                                        }
+                                    )
+                                }
+                                // 有 TMDB 分集资料才出现：每集剧照 + 简介横滑卡片。
+                                if (showEpisodeCards) {
+                                    EpisodeCards(
+                                        episodes = currentRoute.episodes,
+                                        infos = episodeInfos,
+                                        selectedId = selectedEpisodeId,
+                                        onClick = { ep ->
+                                            startPlayback(ep)
+                                            onPlayEpisode(ep)
+                                        }
+                                    )
+                                }
                                 // 与播放态一致：单线路也展示当前播放源，不要让它无故消失
                                 if (mergedData.routes.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(14.dp))
@@ -1161,7 +1280,12 @@ fun MovieDetailScreen(
                             ) {
                                 SectionTitle("演职人员")
                                 Spacer(modifier = Modifier.height(12.dp))
-                                CastRow(data = finalData, cast = tmdbMeta?.cast.orEmpty())
+                                CastRow(
+                                    data = finalData,
+                                    cast = tmdbMeta?.cast.orEmpty(),
+                                    pendingName = pendingPerson,
+                                    onPersonClick = { openPerson(it) }
+                                )
                             }
 
                             // 4. 分类（M3 AssistChip 白底黑字，入场第 5 组）。标签为空整块隐藏，
@@ -1203,17 +1327,20 @@ fun MovieDetailScreen(
                                 }
                             }
 
-                            // 6. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层（入场 order = 7）
-                            Spacer(modifier = Modifier.height(28.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .entranceMotion(entranceClock, order = 7),
-                                horizontalArrangement = Arrangement.SpaceAround
-                            ) {
-                                DetailAction(Icons.Default.Download, "离线缓存") { onShowToast("已加入后台高速下载任务") }
-                                DetailAction(Icons.Default.Cast, "DLNA投屏") { onShowToast("正在搜索局域网电视设备...") }
-                                DetailAction(Icons.Default.Share, "分享") { onShowToast("分享链接已复制至剪贴板") }
+                            // 6. 相关作品：剧照下方横滑，点卡片回 TMDB 详情路由。
+                            //    与剧照共用 order = 6，不新增入场组；order = 7 保留空槽，
+                            //    原来的「离线缓存 / DLNA投屏 / 分享」操作行已按用户要求整行删除。
+                            if (relatedWorks.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(28.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .entranceMotion(entranceClock, order = 6)
+                                ) {
+                                    SectionTitle("相关作品")
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    RelatedWorksRow(relatedWorks) { work -> onOpenRelated(work) }
+                                }
                             }
                             }
 
@@ -1374,46 +1501,215 @@ private fun FavoriteToggle(contained: Boolean, isFavorite: Boolean, onClick: () 
     }
 }
 
-/** M3 原生操作项：黑色图标与文字 */
+/**
+ * 剧照横滑：一张约占屏宽 78% 的 16:9 大图，右边露出下一张一角提示可横滑（对齐参考图）。
+ *
+ * 不裁数量：TMDB 一部片通常给 10~30 张横版剧照，全部铺在横滑里比「只显示 3 张」有用得多，
+ * 也让「看图」这个动作有明确入口（以前三张缩略图点了没反应）。
+ * 缺图 / 死链统一走 `PosterImage` 骨架，别再留一块灰板。
+ */
 @Composable
-private fun DetailAction(icon: ImageVector, label: String, active: Boolean = false, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onClick) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = LocalBTextColors.current.primary
-            )
+private fun StillsRow(stills: List<String>, onOpen: (Int) -> Unit) {
+    val cardWidth = LocalConfiguration.current.screenWidthDp.dp * 0.78f
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        itemsIndexed(stills, key = { index, url -> "$index|$url" }) { index, url ->
+            // PosterImage 输出「骨架 + 真图」两个平级节点，必须放进 Box 叠放。
+            Box(
+                modifier = Modifier
+                    .width(cardWidth)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { onOpen(index) }
+                    )
+            ) {
+                PosterImage(
+                    url = url,
+                    title = null,
+                    seed = "still_$index|$url",
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (active) LocalBTextColors.current.primary else LocalBTextColors.current.secondary
-        )
     }
 }
 
 /**
- * 剧照横滑：一行卡片，点任意一张进全屏查看器。
- *
- * 不裁数量：TMDB 一部片通常给 10~30 张横版剧照，全部铺在横滑里比「只显示 3 张」有用得多，
- * 也让「看图」这个动作有明确入口（以前三张缩略图点了没反应）。
+ * 相关作品横滑（剧照下方）：左侧竖版海报，右侧片名 / 评分·年份 / 两行简介。
+ * 点卡片由导航层接走，复用 `detail/tmdb/{type}/{id}`；关 ripple 避免选中框乱。
  */
 @Composable
-private fun StillsRow(stills: List<String>, onOpen: (Int) -> Unit) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        itemsIndexed(stills, key = { index, url -> "$index|$url" }) { index, url ->
-            AsyncImage(
-                model = url,
-                contentDescription = "剧照 ${index + 1}",
-                contentScale = ContentScale.Crop,
+private fun RelatedWorksRow(items: List<TmdbRelatedWork>, onOpen: (TmdbRelatedWork) -> Unit) {
+    val primary = LocalBTextColors.current.primary
+    val secondary = LocalBTextColors.current.secondary
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(items, key = { "${it.mediaType}:${it.tmdbId}" }) { work ->
+            Row(
                 modifier = Modifier
-                    .width(200.dp)
-                    .height(112.dp)
+                    .width(248.dp)
+                    .height(96.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFFCFD5E0))
-                    .clickable { onOpen(index) }
-            )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { onOpen(work) }
+                    )
+                    .padding(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(54.dp)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(7.dp))
+                ) {
+                    PosterImage(
+                        url = work.posterUrl,
+                        title = work.title,
+                        seed = "related_${work.mediaType}_${work.tmdbId}",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    Text(
+                        text = work.title,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = buildString {
+                            if (work.voteAverage > 0.0) append("★ %.1f  ".format(work.voteAverage))
+                            append(work.year)
+                        }.trim(),
+                        fontSize = 11.sp,
+                        color = secondary,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = work.overview,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = secondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 每集卡片横滑（**只在拿到 TMDB 分集资料时才显示**）：
+ * 16:9 分集剧照 + 播出日期 + 集数·时长 + 集名 + 简介。
+ *
+ * 简介固定 2 行；放不下时**点简介文字本身**展开 / 收起，
+ * 用户明确要求「不要有提示按钮」，所以这里没有「查看全文」之类任何额外控件。
+ * 外层卡片点其它区域仍是播放该集（内层 clickable 优先消费简介上的点击）。
+ */
+@Composable
+private fun EpisodeCards(
+    episodes: List<VideoEpisode>,
+    infos: Map<Int, TmdbEpisodeInfo>,
+    selectedId: Int,
+    onClick: (VideoEpisode) -> Unit
+) {
+    val primary = LocalBTextColors.current.primary
+    val secondary = LocalBTextColors.current.secondary
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(episodes, key = { it.episodeId }) { ep ->
+            // 采集站集号可能与 TMDB 连续编号错位：先按集号取，再按列表顺序兜底。
+            val info = infos[ep.episodeId] ?: infos[episodes.indexOf(ep) + 1]
+            if (info != null) {
+                var expanded by remember(ep.episodeId) { mutableStateOf(false) }
+                var overflow by remember(ep.episodeId) { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier
+                        .width(236.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .then(
+                            if (ep.episodeId == selectedId) Modifier.border(
+                                width = 1.dp,
+                                color = primary.copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) else Modifier
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onClick(ep) }
+                        )
+                        .padding(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(8.dp))
+                    ) {
+                        PosterImage(
+                            url = info.stillUrl,
+                            title = info.name,
+                            seed = "episode_${ep.episodeId}_${info.stillUrl}",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(7.dp))
+                    if (info.airDate.isNotBlank()) {
+                        Text(
+                            text = info.airDate,
+                            fontSize = 11.sp,
+                            color = secondary,
+                            maxLines = 1
+                        )
+                    }
+                    Text(
+                        text = buildString {
+                            append("第 ${ep.episodeId} 集")
+                            if (info.runtimeMinutes > 0) append(" · ${info.runtimeMinutes} 分钟")
+                        },
+                        fontSize = 11.sp,
+                        color = secondary,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = info.name.ifBlank { formatEpisodeName(ep.name) },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (info.overview.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = info.overview,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = secondary,
+                            maxLines = if (expanded) 12 else 2,
+                            overflow = TextOverflow.Ellipsis,
+                            onTextLayout = { overflow = it.hasVisualOverflow },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(
+                                    enabled = overflow || expanded,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { expanded = !expanded }
+                                )
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1557,57 +1853,88 @@ private fun FullDescriptionDialog(text: String, onDismiss: () -> Unit) {
  * 不再用假名字补齐：以前那 5 个假人名会让人以为数据是对的。
  */
 @Composable
-private fun CastRow(data: VideoDetailData, cast: List<TmdbPerson>) {
-    val members: List<Triple<String, String, String>> = remember(data.director, data.actor, cast) {
+private fun CastRow(
+    data: VideoDetailData,
+    cast: List<TmdbPerson>,
+    pendingName: String?,
+    onPersonClick: (TmdbPerson) -> Unit
+) {
+    val members: List<TmdbPerson> = remember(data.director, data.actor, cast) {
         if (cast.isNotEmpty()) {
-            cast.map { Triple(it.name, it.role, it.profileUrl) }
+            cast
         } else {
             buildList {
                 data.director.split(',', '/', '，', '、', ' ')
-                    .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(Triple(it, "导演", "")) }
+                    .map { it.trim() }.filter { it.isNotEmpty() }
+                    .forEach { add(TmdbPerson(name = it, role = "导演")) }
                 data.actor.split(',', '/', '，', '、', ' ')
-                    .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(Triple(it, "演员", "")) }
-            }.distinctBy { it.first }.take(12)
+                    .map { it.trim() }.filter { it.isNotEmpty() }
+                    .forEach { add(TmdbPerson(name = it, role = "演员")) }
+            }.distinctBy { it.name }.take(12)
         }
     }
     if (members.isEmpty()) return
     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        items(members) { (name, role, avatar) ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(68.dp)) {
+        items(members, key = { it.name }) { person ->
+            // 关掉 ripple：圆形头像上 M3 默认波纹会铺成一块方块，与直播卡片同一处理。
+            val interactionSource = remember { MutableInteractionSource() }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .width(68.dp)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        onClick = { onPersonClick(person) }
+                    )
+            ) {
                 Box(
                     modifier = Modifier
                         .size(54.dp)
                         .clip(CircleShape)
-                        .background(avatarColor(name)),
+                        .background(avatarColor(person.name)),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (avatar.isNotBlank()) {
+                    if (person.profileUrl.isNotBlank()) {
                         AsyncImage(
-                            model = avatar,
+                            model = person.profileUrl,
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
                         Text(
-                            text = name.take(1),
+                            text = person.name.take(1),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             // 头像底是固定的浅莫兰迪色，字必须固定近黑，不能跟 B 层动态字色走
                             color = BTextPrimary
                         )
                     }
+                    // 预查 TMDB 的那几百毫秒给一个明确反馈，避免用户以为没点上。
+                    if (pendingName == person.name) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.38f))
+                        )
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = name,
+                    text = person.name,
                     style = MaterialTheme.typography.labelMedium,
                     color = LocalBTextColors.current.primary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = role,
+                    text = person.role,
                     style = MaterialTheme.typography.labelSmall,
                     color = LocalBTextColors.current.secondary,
                     maxLines = 1,
@@ -1718,6 +2045,8 @@ private fun formatEpisodeName(rawName: String): String {
 
 // ---------- 交错式入场（Staggered Entrance） ----------
 // 组数即 B 层视觉顺序：片名区、简介、播放资源、演职人员、分类、预告片、剧照、操作行。
+// 操作行（离线缓存 / DLNA投屏 / 分享）已按用户要求整行删除，order = 7 保留为空槽：
+// 不重排、不改常量，整条入场时间轴仍是 600ms（高频雷区，别顺手改）。
 private const val EntranceGroupCount = 8
 /** 共享元素海报转场 280ms，在它跑到约 72% 时文字接力，形成视觉接续而不是各做各的 */
 private const val EntranceStartDelayMs = 200f
