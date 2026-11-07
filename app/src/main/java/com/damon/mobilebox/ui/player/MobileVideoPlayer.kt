@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.os.SystemClock
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
@@ -69,6 +71,8 @@ fun MobileVideoPlayer(
     modifier: Modifier = Modifier,
     onBackClick: () -> Unit = {},
     isLive: Boolean = false,
+    /** 同一频道的备用线路（不含 [streamUrl] 本身也行，内部会去重），直播起播超时/卡顿超时按顺序自动切换 */
+    liveStreamUrls: List<String> = emptyList(),
     channelGroups: List<LiveChannelGroup> = emptyList(),
     currentChannel: LiveChannel? = null,
     onSelectChannel: ((LiveChannel) -> Unit)? = null
@@ -105,9 +109,66 @@ fun MobileVideoPlayer(
     var bufferedPosition by remember { mutableLongStateOf(0L) }
     var areControlsVisible by remember { mutableStateOf(true) }
 
-    var activeStreamUrl by remember(streamUrl) { mutableStateOf(streamUrl) }
+    var activeStreamUrl by remember { mutableStateOf(streamUrl) }
     var playbackError by remember { mutableStateOf<String?>(null) }
-    var retryCount by remember(streamUrl) { mutableIntStateOf(0) }
+    var retryCount by remember { mutableIntStateOf(0) }
+
+    // ---- 同频道多线路自动切换 ----
+    // live.txt 里同一个频道通常配了 3 条以上线路，deduplicateGroups 已把它们聚合成 urls。
+    // 这里按顺序作为备用源：起播超时、播放中长时间卡在 buffering、或直接报错，都自动跳下一条。
+    // 上次播通过的线路会被提到最前面，避免每次进同一个台都要先等一次超时。
+    val liveSources = remember(streamUrl, liveStreamUrls) {
+        val raw = (listOf(streamUrl) + liveStreamUrls).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val remembered = LiveSourceMemory.preferred(title)
+        if (remembered != null && remembered in raw) {
+            listOf(remembered) + raw.filter { it != remembered }
+        } else {
+            raw
+        }
+    }
+    // 这几个状态刻意不带 streamUrl key：错误回调注册在 DisposableEffect(exoPlayer) 里，
+    // 若状态对象随换台重建，回调会写到已被丢弃的旧 State 上（表现为切线路后状态错乱）。
+    val sourceIndexState = remember { mutableIntStateOf(0) }
+    val playbackStateState = remember { mutableIntStateOf(Player.STATE_IDLE) }
+    var switchNotice by remember { mutableStateOf<String?>(null) }
+    val activeSourceUrl = liveSources.getOrElse(sourceIndexState.intValue) { streamUrl }
+
+    LaunchedEffect(activeSourceUrl) {
+        activeStreamUrl = activeSourceUrl
+        retryCount = 0
+    }
+    LaunchedEffect(streamUrl) {
+        sourceIndexState.intValue = 0
+        playbackStateState.intValue = Player.STATE_IDLE
+        switchNotice = null
+    }
+    // 切换提示 2.6 秒后自动消失
+    LaunchedEffect(switchNotice) {
+        if (switchNotice != null) {
+            delay(2600)
+            switchNotice = null
+        }
+    }
+
+    // 错误回调注册在 DisposableEffect(exoPlayer) 里、只注册一次，必须读"最新"的线路列表
+    val currentLiveSources by rememberUpdatedState(liveSources)
+    /**
+     * 切到下一条线路。所有被引用的状态都是不带 key 的 remember，委托对象跨重组稳定，
+     * 因此这个 lambda 即使被只注册一次的错误回调捕获，也不会写到废弃的状态上。
+     */
+    val switchToNextSource: (String) -> Unit = { reason ->
+        val next = sourceIndexState.intValue + 1
+        val total = currentLiveSources.size
+        if (next < total) {
+            playbackError = null
+            switchNotice = "已切到线路 ${next + 1}/$total · $reason"
+            sourceIndexState.intValue = next
+            Log.d("MB-LIVE", "自动切线路 ${next + 1}/$total ($reason) -> ${currentLiveSources[next]}")
+        } else {
+            playbackError = "所有线路均不可用（共 $total 条）"
+            Log.d("MB-LIVE", "全部线路不可用 ($reason) total=$total")
+        }
+    }
 
     // 横竖屏切换核心逻辑
     val toggleFullScreen = {
@@ -164,12 +225,12 @@ fun MobileVideoPlayer(
     }
 
     // 当视频流发生变化时，更新播放源 (支持嗅探解析与协议降级重试)
-    LaunchedEffect(streamUrl, retryCount) {
+    LaunchedEffect(activeSourceUrl, retryCount) {
         isLoading = true
         playbackError = null
 
         // 1. 自动嗅探/提取网页分享页背后的真实直连 m3u8 流
-        var finalUrl = streamUrl.trim()
+        var finalUrl = activeSourceUrl.trim()
         if (finalUrl.contains("/share/") || finalUrl.contains(".html") || !finalUrl.contains(".")) {
             finalUrl = TvBoxParser.sniffRealStreamUrl(finalUrl)
         }
@@ -197,10 +258,13 @@ fun MobileVideoPlayer(
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                playbackStateState.intValue = playbackState
                 isLoading = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     duration = exoPlayer.duration.coerceAtLeast(0L)
                     playbackError = null
+                    // 记住这条线路可用：下次进同一个频道优先用它，不再先等一次超时
+                    if (isLive) LiveSourceMemory.remember(title, activeStreamUrl)
                 }
             }
 
@@ -218,14 +282,19 @@ fun MobileVideoPlayer(
                 if (isSslOrTlsError && retryCount == 0 && activeStreamUrl.startsWith("https://", ignoreCase = true)) {
                     // 遇到 SSL 握手失败，自动切到 HTTP 协议重试一次
                     retryCount++
+                    return
+                }
+                val message = when {
+                    cause is androidx.media3.exoplayer.source.UnrecognizedInputFormatException -> "媒体流编码格式无法识别，请切换线路"
+                    cause is javax.net.ssl.SSLException -> "安全握手失败 (SSL)，请尝试切换线路"
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败，请检查网络"
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "视频资源不存在 (404)"
+                    else -> "播放失败 (${error.errorCodeName})"
+                }
+                // 直播：还有备用线路就直接跳下一条，不打断观看
+                if (isLive && currentLiveSources.size > 1) {
+                    switchToNextSource("线路报错")
                 } else {
-                    val message = when {
-                        cause is androidx.media3.exoplayer.source.UnrecognizedInputFormatException -> "媒体流编码格式无法识别，请切换线路"
-                        cause is javax.net.ssl.SSLException -> "安全握手失败 (SSL)，请尝试切换线路"
-                        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败，请检查网络"
-                        error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "视频资源不存在 (404)"
-                        else -> "播放失败 (${error.errorCodeName})"
-                    }
                     playbackError = message
                 }
             }
@@ -245,6 +314,43 @@ fun MobileVideoPlayer(
             duration = exoPlayer.duration.coerceAtLeast(0L)
             bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
             delay(500)
+        }
+    }
+
+    // ---- 直播线路守护：起播超时 / 播放中卡死 都自动切下一条 ----
+    // 只在直播启用。报错由 onPlayerError 处理，这里专门兜住「不报错但也一直不出画面」的情况
+    // —— 免费源最常见的失败形态就是握手成功、分片永远拉不下来，播放器一直转圈。
+    LaunchedEffect(isLive, activeSourceUrl, currentLiveSources.size) {
+        if (!isLive || currentLiveSources.size <= 1) return@LaunchedEffect
+        val enteredAt = SystemClock.elapsedRealtime()
+        var everReady = false
+        var bufferingSince = 0L
+        while (true) {
+            delay(400)
+            // 已经把所有线路试完并弹了错误面板，就别再重复切了
+            if (playbackError != null) return@LaunchedEffect
+            val now = SystemClock.elapsedRealtime()
+            when (playbackStateState.intValue) {
+                Player.STATE_READY -> {
+                    everReady = true
+                    bufferingSince = 0L
+                }
+                Player.STATE_ENDED -> return@LaunchedEffect
+                else -> {
+                    if (!everReady) {
+                        if (now - enteredAt >= LiveFirstFrameTimeoutMs) {
+                            switchToNextSource("起播超时")
+                            return@LaunchedEffect
+                        }
+                    } else {
+                        if (bufferingSince == 0L) bufferingSince = now
+                        if (now - bufferingSince >= LiveStallTimeoutMs) {
+                            switchToNextSource("卡顿超时")
+                            return@LaunchedEffect
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -328,6 +434,40 @@ fun MobileVideoPlayer(
                     .size(48.dp)
                     .align(Alignment.Center)
             )
+        }
+
+        // 自动切线路提示：顶部一条淡出胶囊，2.6s 后自动消失
+        AnimatedVisibility(
+            visible = switchNotice != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 16.dp)
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(50)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SwapHoriz,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = switchNotice ?: "",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
         }
 
         // 播放失败提示与重试面板
@@ -828,4 +968,28 @@ fun formatTime(ms: Long): String {
     } else {
         String.format("%02d:%02d", minutes, seconds)
     }
+}
+
+/**
+ * 直播起播超时：从调用 prepare 起算，超过这么久还没有 READY 就判定这条线路不通。
+ * 免费源大量存在「握手成功但分片永远拉不下来」的形态，播放器不会报错，只会无限转圈。
+ */
+private const val LiveFirstFrameTimeoutMs = 9_000L
+
+/** 播放中卡顿超时：已经出过画面，但连续这么长时间停在 buffering 就换线 */
+private const val LiveStallTimeoutMs = 12_000L
+
+/**
+ * 每个频道上次播通的线路（进程内记忆，重启即失效）。
+ * 免费源里同一个频道的几条线路质量差异很大，记住可用的那条能省掉每次进台的超时等待。
+ */
+private object LiveSourceMemory {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun remember(channelName: String, url: String) {
+        if (channelName.isBlank() || url.isBlank()) return
+        map[channelName] = url
+    }
+
+    fun preferred(channelName: String): String? = map[channelName]
 }

@@ -641,6 +641,8 @@ fun LiveScreenContent(
                             title = selectedChannel!!.name,
                             modifier = Modifier.fillMaxSize(),
                             isLive = true,
+                            // 同一频道的其余线路：起播超时 / 卡顿超时 / 报错时自动切换
+                            liveStreamUrls = selectedChannel!!.urls,
                             channelGroups = liveGroups,
                             currentChannel = selectedChannel,
                             onSelectChannel = { channel ->
