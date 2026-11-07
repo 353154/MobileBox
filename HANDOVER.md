@@ -120,6 +120,8 @@
 3. **不要给返回加定时恢复动画**。
 4. 3D `graphicsLayer` 仍在 `sharedBounds` 内层、与 `clip` 一起被提升进 Overlay——保证 Overlay 与卡片本体是同一份绘制。
 5. `cameraDistance` 是绝对像素值，与 `ScaleToBounds` 的 bounds 缩放复合后透视强度非线性变化，是让这一帧更显眼的原因之一，不要单独去调它。
+6. **不要把详情页 8 组内容拆成「每帧组合一组」去摊首帧开销**（2026-11-07 试过）。单组组合只要 5~9ms，但每加一组整帧就涨到 30~50ms，转场会从「一帧跳到终点」退化成「30fps 的多次跳跃」，更难看。正确做法是首帧只留前 3 组、后 5 组等入场结束再一次性补齐。
+7. **详情页不要放可视化返回按钮**（用户明确要求）：返回交给系统手势/返回键，`BackHandler` 保留，播放器打开时先关播放器。
 
 ---
 
@@ -167,10 +169,14 @@
 `TvBoxParser` 解析 TVBox JSON（`sites` / `lives` / `parses`）与 M3U；`TvBoxRepository` 暴露 `realVodList` / `categoryVodList` / `selectedDetail` / `epgPrograms` 等 StateFlow。
 
 ### 8.2 EPG
-- 支持 XMLTV（gzip、3 种时间格式、id/display-name 双索引）与 TVBox 模板式 JSON（`{name}` / `{date}` 替换、`HH:mm` 补齐绝对时间、跨零点）。
-- 多模板**依次回退 + 同域优先 + 成功模板记忆**；数据层预取首屏 12 个频道，不依赖页面组合时机。
+- **两个来源，全局 XMLTV 优先**（2026-11-07 起）：
+  1. `data/tvbox/EpgGlobalSource.kt` —— 公开 XMLTV `cdn.jsdelivr.net/gh/fanmingming/live@main/e.xml`（135 频道 / 3.6 万档）。OkHttp 流式 `XmlPullParser` 解析，只保留 `[今天 00:00, +36h)`；按天落盘 `cache/epg_global_v1.txt`（约 220KB，头行带日期，12h 内直接读盘）；`Mutex` + memo 保证多频道并发只下载解析一次，失败记 `failedDay` 当天不重试。冷缓存首启约 3s，命中缓存约 120ms。
+  2. 订阅模板（`lives[].epg` / M3U `url-tvg`，`{name}` `{date}` 替换）：只作为**兜底**，用于全局源没有的频道（凤凰系等）。模板连续失败 3 次本次会话跳过，避免每频道白等握手超时。
+- `prefetchDefaultChannels()` 用全局源一次性铺满所有频道（实测 35/54），不依赖页面组合时机；订阅里没有 EPG 地址时也照样预取。
+- 匹配走 `EpgPrograms.normalize`（去大小写/横线/清晰度/「卫视」「台」），`CCTV-1` ↔ `CCTV1`、`CCTV-5+` ↔ `CCTV5+` 都对得上。
 - 匹配不到就返回 null，UI 整行不显示，**绝不回填假数据**。
 - 日志：`MB-EPG`。
+- **历史坑**：订阅里原有的 `xyzweb.cyou/tvbox/epg` 会恒定返回 `{"epg_data":[]}`（上游后端空了），`epg.112114.xyz` 域名已不可达 —— 排查时先用手机 `curl` 验源，别怀疑自己的解析。核对解析结果要看设备侧 `cache/epg_global_v1.txt`，本机 curl 拿到的 jsdelivr 副本可能是旧日期的。
 
 ### 8.3 图片 CDN 兼容（`ImageUrlCompat.kt`）
 `p.bfvp26.com` 等采集站 CDN：https 端口 SSL 握手直接失败、且会间歇返回 200 + `text/html` 拦截页。
@@ -225,7 +231,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 ## 十一、已知问题与下一步
 
 **已知问题**
-1. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏和返回按钮下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让，或给顶栏加一条与 `chromeAlpha` 同步的极淡渐变（注意别切出水平硬边）。
+1. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让（注意别切出水平硬边）。
 2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
 3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
 
