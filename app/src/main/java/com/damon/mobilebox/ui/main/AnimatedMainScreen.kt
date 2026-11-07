@@ -978,8 +978,6 @@ fun ModernSettingsScreen(
     var showAboutDialog by remember { mutableStateOf(false) }
     var showWebDavDialog by remember { mutableStateOf(false) }
 
-    var isMpvKernel by remember { mutableStateOf(true) }
-
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -1171,6 +1169,8 @@ fun ModernSettingsScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    // 解码内核：只读真状态。双核 IJK / MPV 属 Step 3.1，用户已明确跳过，
+                    // 所以这里不再放假开关 —— 避免「文案说切了 IJKPlayer，实际一直跑 ExoPlayer」的误导。
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1180,14 +1180,27 @@ fun ModernSettingsScreen(
                         SettingLeadingIcon(Icons.Default.Memory)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("MPV 高性能解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                            Text(if (isMpvKernel) "已启用 MPV 原生解码 (支持 ASS 压制字幕与 Anime4K)" else "已回退为 IJKPlayer 内核", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                            Text("解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                "固定使用 Media3 ExoPlayer（硬解优先）· 双核 IJK / MPV 未接入",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
                         }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        CupertinoSwitch(
-                            checked = isMpvKernel,
-                            onCheckedChange = { isMpvKernel = it }
-                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                "ExoPlayer",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                     }
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
