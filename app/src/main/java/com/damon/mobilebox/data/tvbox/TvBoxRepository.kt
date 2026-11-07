@@ -107,6 +107,13 @@ object TvBoxRepository {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // 应用上下文：供 selectSite 持久化用户选中的站点（无需改调用点签名）
+    @Volatile
+    private var appContext: Context? = null
+    // initFromCache 幂等：详情页返回时 AnimatedMainScreen 会重新组合，
+    // 旧实现每次都重跑恢复逻辑 -> 覆盖 _selectedSite、重新拉片库 -> 数据源被重置 + 海报卡片抖动
+    private val cacheInitialized = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // 分类影片两级内存缓存池：Key 为 "${site.key}_${categoryId ?: "0"}"
     private val categoryVodCache = java.util.concurrent.ConcurrentHashMap<String, List<VideoDetailData>>()
 
@@ -124,6 +131,7 @@ object TvBoxRepository {
      * 加载并解析用户的 TVBox 订阅链接 (兼容单仓与多仓)
      */
     suspend fun loadSubscription(context: Context, url: String): Result<List<TvBoxSite>> {
+        appContext = context.applicationContext
         val trimmedUrl = url.trim()
         if (trimmedUrl.isBlank()) {
             return Result.failure(Exception("订阅链接不能为空"))
@@ -245,7 +253,10 @@ object TvBoxRepository {
         }
 
         _currentSites.value = sortedSites
-        val defaultSite = sortedSites.firstOrNull()
+        // 保留用户已保存的选择：只有 key 不在新列表里时才回退到第一个站点。
+        // 旧实现无条件取 firstOrNull 并覆盖 KEY_SELECTED_SITE_KEY，导致每次订阅刷新都重置成「暴风影视」。
+        val savedKey = context.tvBoxDataStore.data.firstOrNull()?.get(KEY_SELECTED_SITE_KEY)
+        val defaultSite = sortedSites.find { it.key == savedKey } ?: sortedSites.firstOrNull()
         _selectedSite.value = defaultSite
 
         // 处理直播源
@@ -466,6 +477,13 @@ object TvBoxRepository {
      */
     suspend fun selectSite(site: TvBoxSite) {
         _selectedSite.value = site
+        // 持久化用户选择：否则 DataStore 里永远是订阅解析时的第一个站点，
+        // 任何一次 initFromCache 都会把选择覆盖回去。
+        appContext?.let { ctx ->
+            try {
+                ctx.tvBoxDataStore.edit { prefs -> prefs[KEY_SELECTED_SITE_KEY] = site.key }
+            } catch (_: Exception) { }
+        }
         _realCategories.value = emptyList()
         categoryVodCache.clear()
         _categoryVodList.value = emptyList()
@@ -622,7 +640,8 @@ object TvBoxRepository {
                 val rawVodList = response?.list ?: emptyList()
                 val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it) }
 
-                if (convertedList.isNotEmpty()) {
+                // 内容相同则不发射新值：避免多余刷新让 LazyVerticalGrid 整表重组、海报抖动
+                if (convertedList.isNotEmpty() && convertedList != _realVodList.value) {
                     _realVodList.value = convertedList
                 }
                 Result.success(convertedList)
@@ -642,6 +661,8 @@ object TvBoxRepository {
      * 初始化时读取本地缓存的真实订阅与站点 (杜绝任何默认假数据源注入)
      */
     suspend fun initFromCache(context: Context) {
+        appContext = context.applicationContext
+        if (!cacheInitialized.compareAndSet(false, true)) return
         try {
             val prefs = context.tvBoxDataStore.data.firstOrNull() ?: return
             val savedUrl = prefs[KEY_SUBSCRIPTION_URL]?.trim() ?: ""

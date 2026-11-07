@@ -3,8 +3,8 @@ package com.damon.mobilebox.ui.components
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,34 +31,35 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+
+/**
+ * 当前详情页对应的共享元素 key（由 AppNavigation 的 detail composable 显式维护）。
+ *
+ * 为什么不用 SharedTransitionScope.isTransitionActive：那是整个布局级别的全局状态，
+ * 任何卡片读它都会让全屏卡片一起跳；而且它在 snapshotFlow 里实测不可追踪。
+ * 这里改用导航生命周期直接驱动，只有 key 匹配的那张卡片会收敛 3D，其余卡片完全不受影响。
+ */
+object SharedPosterTransition {
+    val activeKey = mutableStateOf<String?>(null)
+}
 
 /**
  * 全局统一的标准海报组件 (可在首页、搜索、分类等所有页面复用)
  * 严格按照 0.7f 黄金竖版比例，与详情页 1:1 严格对齐，彻底消除飞行形变
- * 严格控制 Modifier 链顺序：sharedBounds 位于 clip 之前，使用 8dp 圆角
  * 禁用 Coil crossfade 杜绝动画闪烁，结合硬件传感器 3D 视差
+ *
+ * 【3D 与共享元素的约定，别再改回去】
+ * 详情页 A 层是纯海报（无 3D），首页卡片带 3D —— sharedBounds 转场起止必须在这两份
+ * 绘制内容之间切换，只有匹配的那张卡片会经历，所以「只有点进去的那张抖」。
+ * 单纯把 3D 放内层 / 外层只是把跳变挪到起始帧或收尾帧，无法消除。
+ * 用户拍板：详情页保持静止不动，改由本卡片在转场期间收敛成纯海报（weight -> 0）。
+ * 【实测修正 09:20】返回后再播放 200ms「恢复 3D」动画，会在画面已静止后凭空多出一次
+ * 目标卡片放大+倾斜+流光，用户判定的「只有点进去的那张抖一下」正是它。
+ * 因此取消定时恢复：返回后保持纯海报绝对静止，等用户真正倾斜手机时才自然跟上。
  */
-/**
- * 海报入场淡入闸门
- * Pager 的离屏页面会被销毁，切回首页/分类时卡片会重新组合。
- * 若每张卡片每次挂载都从 alpha=0 播放 350ms 淡入，就会在每次切 Tab 时出现整屏“闪一下”。
- * 这里把入场动画限定为进程启动后的首批海报（700ms 窗口），之后挂载的卡片直接以 alpha=1 呈现。
- */
-private object PosterEntranceGate {
-    private val firstMountMs = java.util.concurrent.atomic.AtomicLong(0L)
-
-    fun shouldAnimate(): Boolean {
-        val now = System.currentTimeMillis()
-        val first = firstMountMs.get()
-        if (first == 0L) {
-            firstMountMs.compareAndSet(0L, now)
-            return true
-        }
-        return now - first < 700L
-    }
-}
-
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun StandardPosterCard(
@@ -72,87 +73,124 @@ fun StandardPosterCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {}
 ) {
-    // 仅首批海报播放入场淡入；切 Tab 重新组合的卡片直接完整显示，避免整屏闪烁
-    var isMounted by remember { mutableStateOf(!PosterEntranceGate.shouldAnimate()) }
-    LaunchedEffect(Unit) {
-        isMounted = true
-    }
-    val alphaAnim by animateFloatAsState(
-        targetValue = if (isMounted) 1f else 0f,
-        animationSpec = tween(durationMillis = 350),
-        label = "posterAlpha"
-    )
-
     val parallaxState = LocalParallaxAngles.current
     val isParallaxEnabled = LocalParallaxEnabled.current
     val density = LocalDensity.current.density
     val context = LocalContext.current
+
+    val posterKey = movieId?.trim()?.takeIf { it.isNotEmpty() }?.let { "poster_$it" }
+
+    // 3D 权重：1 = 正常视差，0 = 纯海报（与详情页 A 层一致）。
+    // 只有本次详情页对应的那张卡片会变化；其余卡片恒为 1，绘制结果逐帧不变。
+    // 权重在 graphicsLayer / drawBehind 的绘制阶段读取，动画每帧只重绘、不重组。
+    val parallaxWeight = remember { Animatable(1f) }
+
+    LaunchedEffect(posterKey) {
+        if (posterKey == null) return@LaunchedEffect
+        var waitingForMotion = false
+        var baseAngles: ParallaxAngles? = null
+
+        // 导航状态：进详情立刻收敛为纯海报；返回后**不播放任何定时恢复动画**，
+        // 只标记等待用户真正倾斜手机 —— 转场结束后画面必须完全静止。
+        launch {
+            snapshotFlow { SharedPosterTransition.activeKey.value == posterKey }
+                .distinctUntilChanged()
+                .collectLatest { isDetailTarget ->
+                    if (isDetailTarget) {
+                        // 转场第一帧 Overlay 就必须是纯海报，不能留插值过程
+                        parallaxWeight.snapTo(0f)
+                        waitingForMotion = false
+                        baseAngles = null
+                    } else {
+                        waitingForMotion = true
+                        baseAngles = null
+                    }
+                }
+        }
+
+        // 只有用户主动倾斜手机才让这张卡片的 3D 自然跟上；此时整排卡片本来就在动，
+        // 不会出现「页面已静止却突然自己放大倾斜」的孤立跳变。
+        // waitingForMotion 为 false 时不读取角度 State，避免给每张卡片都加一个 20ms 轮询。
+        snapshotFlow { if (waitingForMotion) parallaxState.value else null }.collect { a ->
+            if (a == null) return@collect
+            val base = baseAngles
+            if (base == null) {
+                baseAngles = a
+                return@collect
+            }
+            val delta = kotlin.math.abs(a.roll - base.roll) + kotlin.math.abs(a.pitch - base.pitch)
+            if (delta > 0.05f) {
+                waitingForMotion = false
+                parallaxWeight.animateTo(1f, tween(260, easing = FastOutSlowInEasing))
+            }
+        }
+    }
 
     // 仅当评分为有效正数时才渲染角标 (0.0 / 空值视为无评分)
     val hasScore = remember(score) { (score.toFloatOrNull() ?: 0f) > 0f }
 
     Column(
         modifier = modifier
-            .graphicsLayer { alpha = alphaAnim }
             .fillMaxWidth()
             // 这里不裁剪：Column 的 clip 会连带裁掉海报 3D 旋转后超出卡片宽度的近边，
             // 让透视形变退化成中心缩放。圆角由海报 Box 自身的 clip 保证。
             .clickable { onClick() }
     ) {
-        // 海报图片容器：强制统一 aspectRatio(0.7f)，平滑过渡
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(0.7f)
-                // 3D 陀螺仪视差：放在 clip 外层，让「已裁剪成圆角的整张卡片」一起做透视变换。
-                // 旧实现把旋转放在图片内层，四角被父 Box 裁掉后只剩中心轻微缩放，
-                // 不产生边缘透视形变，肉眼几乎看不出倾斜。
-                // 角度取自相对握持基线的 State，绘制阶段读取，不触发全树重组。
-                .graphicsLayer {
-                    if (isParallaxEnabled) {
-                        val p = parallaxState.value
-                        rotationY = p.roll * 14f
-                        rotationX = -p.pitch * 14f
-                        cameraDistance = 14f * density
-                        translationX = p.roll * 5f * density
-                        translationY = -p.pitch * 5f * density
-                        scaleX = 1.04f
-                        scaleY = 1.04f
+        // 3D 陀螺仪视差：位于 sharedBounds 之后（内层），会随海报一起被提升进 Overlay。
+        // 转场期间 weight=0，Overlay 重放的就是无 3D 纯海报，与详情页 A 层完全一致。
+        val parallaxModifier = Modifier.graphicsLayer {
+            if (isParallaxEnabled) {
+                val w = parallaxWeight.value
+                val p = parallaxState.value
+                rotationY = p.roll * 14f * w
+                rotationX = -p.pitch * 14f * w
+                cameraDistance = 14f * density
+                translationX = p.roll * 5f * density * w
+                translationY = -p.pitch * 5f * density * w
+                scaleX = 1f + 0.04f * w
+                scaleY = 1f + 0.04f * w
+            } else {
+                // 显式归零，避免 graphicsLayer 作用域复用时残留上一帧变换
+                rotationX = 0f
+                rotationY = 0f
+                translationX = 0f
+                translationY = 0f
+                scaleX = 1f
+                scaleY = 1f
+            }
+        }
+
+        // 共享元素：key 与详情页 A 层完全一致，实现「从哪进从哪回」的容器展开/收缩。
+        val sharedModifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(0.7f)
+            .let { m ->
+                if (sharedTransitionScope != null && animatedVisibilityScope != null && !movieId.isNullOrEmpty()) {
+                    with(sharedTransitionScope) {
+                        m.sharedBounds(
+                            sharedContentState = rememberSharedContentState(key = "poster_${movieId.trim()}"),
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            boundsTransform = { _, _ -> tween(280, easing = FastOutSlowInEasing) },
+                            resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(),
+                            clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(8.dp))
+                        )
                     }
-                }
+                } else m
+            }
+            .then(parallaxModifier)
+
+        // 海报图片容器：强制统一 aspectRatio(0.7f)
+        Box(
+            modifier = sharedModifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             if (posterUrl.isNotEmpty()) {
-                val imageModifier = Modifier
-                    .fillMaxSize()
-                    .let { m ->
-                        if (sharedTransitionScope != null && animatedVisibilityScope != null && !movieId.isNullOrEmpty()) {
-                            with(sharedTransitionScope) {
-                                m.sharedBounds(
-                                    sharedContentState = rememberSharedContentState(key = "poster_${movieId.trim()}"),
-                                    animatedVisibilityScope = animatedVisibilityScope,
-                                    boundsTransform = { _, _ ->
-                                        tween(durationMillis = 380, easing = FastOutSlowInEasing)
-                                    },
-                                    resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(),
-                                    clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(8.dp))
-                                )
-                            }
-                        } else {
-                            m
-                        }
-                    }
                 AsyncImage(
-                    model = remember(posterUrl) {
-                        ImageRequest.Builder(context)
-                            .data(posterUrl)
-                            .crossfade(false)
-                            .build()
-                    },
+                    model = rememberRetryableImageRequest(context, posterUrl.toLoadableImageUrl()),
                     contentDescription = title,
                     contentScale = ContentScale.Crop,
-                    modifier = imageModifier
+                    modifier = Modifier.fillMaxSize()
                 )
             } else {
                 Icon(
@@ -175,9 +213,13 @@ fun StandardPosterCard(
                         .padding(6.dp)
                         .graphicsLayer {
                             if (isParallaxEnabled) {
+                                val w = parallaxWeight.value
                                 val p = parallaxState.value
-                                translationX = p.roll * 6.dp.toPx()
-                                translationY = p.pitch * 6.dp.toPx()
+                                translationX = p.roll * 6.dp.toPx() * w
+                                translationY = p.pitch * 6.dp.toPx() * w
+                            } else {
+                                translationX = 0f
+                                translationY = 0f
                             }
                         }
                         .clip(RoundedCornerShape(6.dp))
@@ -194,28 +236,32 @@ fun StandardPosterCard(
                 }
             }
 
-            // 陀螺仪 3D 动态流光反射层
-            if (isParallaxEnabled) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .drawBehind {
-                            val p = parallaxState.value
-                            val highlightX = size.width * (0.5f - p.roll * 0.6f)
-                            val highlightY = size.height * (0.5f - p.pitch * 0.6f)
-                            drawRect(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        Color.White.copy(alpha = 0.35f),
-                                        Color.Transparent
-                                    ),
-                                    center = Offset(highlightX, highlightY),
-                                    radius = size.width * 0.95f
-                                )
+            // 陀螺仪 3D 动态流光反射层。节点始终存在（转场期间不增删组合树节点），
+            // 只在绘制阶段按权重淡出，避免整屏卡片因结构变化在同一帧一起闪动。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .drawBehind {
+                        if (!isParallaxEnabled) return@drawBehind
+                        val w = parallaxWeight.value
+                        if (w <= 0.001f) return@drawBehind
+                        val p = parallaxState.value
+                        val roll = p.roll * w
+                        val pitch = p.pitch * w
+                        val highlightX = size.width * (0.5f - roll * 0.6f)
+                        val highlightY = size.height * (0.5f - pitch * 0.6f)
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.35f * w),
+                                    Color.Transparent
+                                ),
+                                center = Offset(highlightX, highlightY),
+                                radius = size.width * 0.95f
                             )
-                        }
-                )
-            }
+                        )
+                    }
+            )
         }
 
         Spacer(modifier = Modifier.height(10.dp))

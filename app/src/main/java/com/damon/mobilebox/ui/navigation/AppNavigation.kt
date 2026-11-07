@@ -7,12 +7,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
+import com.damon.mobilebox.ui.components.SharedPosterTransition
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import com.damon.mobilebox.ui.main.AnimatedMainScreen
 import com.damon.mobilebox.ui.theme.ThemeManager
@@ -32,10 +34,13 @@ fun AppNavigation(themeManager: ThemeManager) {
         NavHost(
             navController = navController,
             startDestination = "home",
-            enterTransition = { fadeIn(animationSpec = tween(380, easing = FastOutSlowInEasing)) },
-            exitTransition = { fadeOut(animationSpec = tween(380, easing = FastOutSlowInEasing)) },
-            popEnterTransition = { fadeIn(animationSpec = tween(380, easing = FastOutSlowInEasing)) },
-            popExitTransition = { fadeOut(animationSpec = tween(380, easing = FastOutSlowInEasing)) }
+            // 与 sharedBounds 的 boundsTransform 同为 280ms：NavHost 的 AnimatedVisibility
+            // transition 提供进度，海报才能从原卡片 bounds 展开到全屏、返回时逆向收缩。
+            // 若设为 EnterTransition.None，转场瞬间完成，共享元素动画会被吃掉。
+            enterTransition = { fadeIn(animationSpec = tween(280, easing = FastOutSlowInEasing)) },
+            exitTransition = { fadeOut(animationSpec = tween(280, easing = FastOutSlowInEasing)) },
+            popEnterTransition = { fadeIn(animationSpec = tween(280, easing = FastOutSlowInEasing)) },
+            popExitTransition = { fadeOut(animationSpec = tween(280, easing = FastOutSlowInEasing)) }
         ) {
             composable("home") {
                 AnimatedMainScreen(
@@ -58,6 +63,16 @@ fun AppNavigation(themeManager: ThemeManager) {
                 )
             ) { backStackEntry ->
                 val movieId = backStackEntry.arguments?.getString("movieId")?.trim().orEmpty()
+
+                // 由导航生命周期显式维护「当前共享元素是哪家」：详情页在栈上的整个期间
+                // （含 280ms 返回动画），目标卡片收敛为纯海报，与详情页 A 层一致。
+                // NavHost 会在 pop 动画结束后才 dispose 本 composable，那时 Overlay 已消失，
+                // 正是让卡片平滑恢复 3D 的时机。不要用 isTransitionActive 判断（全局且不可追踪）。
+                DisposableEffect(movieId) {
+                    SharedPosterTransition.activeKey.value = "poster_$movieId"
+                    onDispose { SharedPosterTransition.activeKey.value = null }
+                }
+
                 val rawTitle = backStackEntry.arguments?.getString("title").orEmpty()
                 val rawPoster = backStackEntry.arguments?.getString("poster").orEmpty()
                 val routeTitle = try { URLDecoder.decode(rawTitle, "UTF-8") } catch (_: Exception) { rawTitle }

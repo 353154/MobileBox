@@ -17,8 +17,14 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
@@ -48,14 +54,18 @@ class ThemeManager(private val context: Context) {
         private val PARALLAX_KEY = booleanPreferencesKey("parallax_enabled")
     }
 
-    val appThemeStateFlow: Flow<AppThemeState> = context.dataStore.data.map { pref ->
+    // DataStore 是冷流：每个订阅点都会各自重新读一次，并先以 initial 默认值渲染一帧。
+    // 症状：从别的 Tab 切到设置页时，3D 开关会自己从「开」动画到「关」（用户没碰它）。
+    // 改成 Eagerly 的 StateFlow：全应用共享同一个最新值，切页 / 返回首页都不回退到默认值。
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val appThemeStateFlow: StateFlow<AppThemeState> = context.dataStore.data.map { pref ->
         AppThemeState(
             themePreference = ThemePreference.entries.find { it.value == (pref[THEME_KEY] ?: 0) } ?: ThemePreference.SYSTEM,
             colorMode = ThemeColorMode.entries.find { it.value == (pref[COLOR_MODE_KEY] ?: 0) } ?: ThemeColorMode.DEFAULT,
             customColorInt = pref[CUSTOM_COLOR_KEY] ?: 0xFF2F81F7.toInt(),
             parallaxEnabled = pref[PARALLAX_KEY] ?: true
         )
-    }
+    }.stateIn(scope, SharingStarted.Eagerly, AppThemeState())
 
     // 保留兼容属性供其他组件直接监听
     val themePreferenceFlow: Flow<ThemePreference> = appThemeStateFlow.map { it.themePreference }
@@ -100,7 +110,7 @@ fun TvBoxTheme(
     themeManager: ThemeManager,
     content: @Composable () -> Unit
 ) {
-    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
+    val themeState by themeManager.appThemeStateFlow.collectAsState()
     val isSystemDark = isSystemInDarkTheme()
     
     val useDarkTheme = when (themeState.themePreference) {

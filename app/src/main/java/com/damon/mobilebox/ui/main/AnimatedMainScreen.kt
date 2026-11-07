@@ -135,7 +135,7 @@ fun AnimatedMainScreen(
         }
     }
 
-    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
+    val themeState by themeManager.appThemeStateFlow.collectAsState()
     val parallaxAngles = rememberParallaxAngles(enabled = themeState.parallaxEnabled)
 
     CompositionLocalProvider(
@@ -912,7 +912,7 @@ fun ModernSettingsScreen(
     onShowToast: (String) -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val themeState by themeManager.appThemeStateFlow.collectAsState(initial = AppThemeState())
+    val themeState by themeManager.appThemeStateFlow.collectAsState()
     val currentTheme = themeState.themePreference
     val selectedWarehouse by TvBoxRepository.selectedWarehouse.collectAsState()
     val savedSubscriptionUrl by TvBoxRepository.savedSubscriptionUrl.collectAsState()
