@@ -2,6 +2,7 @@ package com.damon.mobilebox
 
 import android.app.Application
 import android.util.Log
+import com.damon.mobilebox.data.watch.WatchStore
 import dagger.hilt.android.HiltAndroidApp
 
 /**
@@ -16,6 +17,9 @@ class MobileBoxApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 追剧收藏 / 播放历史：全应用共享一份 StateFlow，必须在任何页面组合前起好，
+        // 否则「我的」页与详情页会各自从空列表起手渲染一帧。
+        WatchStore.init(this)
         Log.i(TAG, "MobileBoxApp 初始化成功，Hilt 依赖注入容器已就绪")
     }
 }

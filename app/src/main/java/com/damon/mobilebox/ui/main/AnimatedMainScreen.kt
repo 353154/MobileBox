@@ -85,6 +85,7 @@ import com.damon.mobilebox.ui.components.BingWallpaperStore
 import com.damon.mobilebox.ui.components.GlassControlButton
 import com.damon.mobilebox.ui.category.CategoryScreen
 import com.damon.mobilebox.ui.profile.ProfileScreen
+import com.damon.mobilebox.ui.profile.WatchListType
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
 import com.damon.mobilebox.ui.player.MobileVideoPlayer
 import com.damon.mobilebox.ui.player.VideoDetailData
@@ -105,7 +106,8 @@ fun AnimatedMainScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     onNavigateToDetail: (VideoDetailData) -> Unit = {},
-    onNavigateToSearch: () -> Unit = {}
+    onNavigateToSearch: () -> Unit = {},
+    onNavigateToWatchList: (WatchListType) -> Unit = {}
 ) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
@@ -250,7 +252,9 @@ fun AnimatedMainScreen(
                                         onShowToast = { toastMessage = it }
                                     )
                                 }
-                                4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) { ProfileScreen(onShowToast = { toastMessage = it }) }
+                                4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                    ProfileScreen(onOpenList = onNavigateToWatchList)
+                                }
                             }
                         }
                     }

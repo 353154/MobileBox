@@ -1,9 +1,9 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.5（详情页原地播放 · 播放源自动接力版）
+> **文档版本**：v3.9（观影列表页 · 分钟级统计 · 入场显示兜底 · 用户验收通过版）
 > **更新时间**：2026-11-07
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：39 个 Kotlin 文件，约 11.7k 行
+> **当前规模**：41 个 Kotlin 文件，约 12.5k 行
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。
@@ -57,6 +57,9 @@
 | `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型（**点播已不走这里**，只剩直播 / 横屏） | 控制按钮用 M3 原生；竖屏 `statusBarsPadding`，PiP 时强制 `fillMaxSize`；`VideoRoute.displayName()` 是播放源名称唯一出口 |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
 | `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/全站搜索/选中站点） | `cacheInitialized` 保证 `initFromCache` 幂等，见 7.2；首启自动订阅见 8.5 |
+| `data/watch/WatchStore.kt` | 追剧收藏 / 播放历史（**独立** `watch_prefs` DataStore + 共享 StateFlow） | 见 8.6；不要复用订阅或主题的 DataStore |
+| `ui/profile/ProfileScreen.kt` | 「我的」页统计 / 收藏 / 历史，全部由真实播放记录推导 | `stats` 是可空覆盖入口，正常业务不传；时长口径见 8.7 |
+| `ui/profile/WatchListScreen.kt` | 历史 / 收藏 / 待看 / 在看共用的列表页（`WatchListType` 枚举 + `watchlist/{type}` 路由） | 只存最小展示字段，进详情前按片名现取线路，见 8.7 |
 
 ---
 
@@ -122,8 +125,11 @@
 - 8 组按视觉顺序：片名区 → 简介 → 播放资源 → 演职人员 → 分类 → 预告片 → 剧照 → 操作行。
 - 参数（`MovieDetailScreen.kt` 末尾）：`EntranceStartDelayMs = 200f`（海报转场 280ms 的 ~72% 处接力）、`EntranceRiseDurationMs = 320f`、`EntranceStaggerMs = 40f`，`EntranceTotalMs = 320 + 40*7 = 600ms`。
 - 动势：`alpha 0→1` + 自下而上 `30~34dp`，组内 easeOutCubic。
-- 实现：`Modifier.entranceMotion({ entrance.value }, order, rise)` 在 `graphicsLayer` 里读 lambda → **绘制阶段取时钟，动画每帧只重绘不重组**。
+- 实现：`Modifier.entranceMotion(entranceClock, order, rise)` 在 `graphicsLayer` 里读 lambda → **绘制阶段取时钟，动画每帧只重绘不重组**。
 - **打断条件绝不能用 `scrollState.isScrollInProgress`**：页面刚组合时它会瞬间为 `true`，`snapTo(终值)` 会把整段动画一帧跳过（表现为文字 3 帧全亮，极易误判成「动画没接上」）。必须用 `snapshotFlow { scrollState.value }.first { it > 0 }`。
+- **显示结果绝不能只依赖入场协程是否跑完**（2026-11-07 16:26 修复，用户三张截图反馈「有些详情页下半部分字变白、显示到分类就没了，有些完全正常」）：`entrance.value` 被并发打断 / 后台冻结时停在中间值，后半段组（order 大）算出的 alpha 极低 —— 深色字低 alpha 叠白遮罩看着像「字变白了」，alpha≈0 的组连色块都看不见、像「内容缺失」，**实际内容早已组合出来，不是数据问题也不是字色逻辑错**。定案：`entranceClock = { if (scrollState.value > 0) EntranceTotalMs else entrance.value }`，用户一滚过就在绘制层落定终值，与动画状态彻底解耦；8 处 `entranceMotion` 一律传这个 lambda，**不要改回 `{ entrance.value }`**。
+- 「滚动打断」必须独立成 `LaunchedEffect`，**不要放回主动画 effect 内的 `launch` 子协程**：主 `animateTo` 结束 / 被取消时会连带取消子协程，打断反而不生效（本次故障的可疑根因之一）。屏外 5 组的 `offscreenReady` 除「入场跑完 + 滚动立即补齐」外，还要有一条 `delay(200+600+400)` 的**绝对时间兜底**，防止动画卡住时内容永久不组合。
+- `EntranceTotalMs = 600f` 正好让最后一组（order 7，start 280）跑到 alpha=1；调参数时别让末组落不到 1。
 
 ---
 
@@ -231,6 +237,22 @@
 - 打包：`./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`。首次全量约 6 分钟；`gradle.properties` 已开 `org.gradle.caching`，零改动重建约 1 分钟。
 - 接收方注意：需要在系统里允许「安装未知来源应用」；若之前装过同包名但不同签名的版本，会提示「应用未安装」，先卸载旧的。
 - **与 debug 包签名相同**（都是 debug keystore），两者会互相覆盖，不能共存。
+
+### 8.6 观影记录本地持久化（`WatchStore`，2026-11-07 新增，用户真机验收通过）
+- 独立 DataStore `watch_prefs`（`data/watch/WatchStore.kt`），**刻意不复用**订阅用的 `tvbox_subscription_prefs` 与主题用的 `settings`：订阅是可丢弃缓存，`TvBoxRepository` 清订阅时会 `prefs.remove(...)`，观影记录不能跟着一起没。依赖早已在 `libs.versions.toml`（DataStore Preferences 1.1.1 + Gson 2.10.1），本轮**没有新增任何依赖**。
+- `MobileBoxApp.onCreate` 调一次 `WatchStore.init(this)`，由 `ds.data.collect` 驱动两个共享 `StateFlow`（`favorites` / `history`）。**不要在各页面各自 `collectAsState(initial=...)` 读冷流** —— 会先渲染一帧空列表，切 Tab 时收藏数自己跳一下（`ThemeManager` 踩过同款坑，见 7.1）。
+- 收藏 `FavoriteItem(videoId / title / posterUrl / addedAt)` 只存展示所需最小字段，详情仍从订阅源现取；`toggleFavorite` 按 `videoId` 幂等。两个详情页（`MovieDetailScreen` 与遗留 `PlayerDetailScreen`）共用同一份表，退出页面 / 切 Tab / 重启都保留。
+- 播放历史 `WatchRecord` 只在 `MobileVideoPlayer.onFirstFrameRendered` **真正出画面时**落一条：加载失败与自动换源期间不记。`MovieDetailScreen` 用普通类 `PlaySession` + `DisposableEffect(playTarget)` 结算 `watchedMs`（换集 / 换源 / 退出播放 / 页面销毁都会 dispose），计时用 `SystemClock.elapsedRealtime`。**同一会话内首帧回调可能多次触发**，`recordId == null` 是唯一幂等门；历史上限 50 条。
+- `watchedMs` 是会话墙上时间，含暂停 / 后台，是**上界近似值**，不是解码器精确播放时长。`ProfileScreen.buildViewingStats(history)` 据此推导统计卡片的「时长 / 部 / 集」、近 7 天曲线与 24h 柱状图；`ViewingStats` 默认值一律 0，删掉了原来的 `(2..5).random()` 和写死的 12.5 小时 / 14 部 / 3 部。minSdk 24，用 `Calendar` 而不是 `java.time`，不引入 desugaring。**首版时长口径是「小时 · 1 位小数」，已按用户反馈改为分钟级，见 8.7**。
+- **遗留播放页 `PlayerDetailScreen`（直播 / 横屏）只接了收藏，没接播放历史**：点播现行入口是详情页原地播放（见 10.4），避免把直播频道混进影片历史。
+- 未做：WebDAV 同步（Step 5.2，以本条为前置）。列表页与统计精度已补，见 8.7。
+
+### 8.7 观影列表页与分钟级统计（2026-11-07 16:19 新增，用户真机验收通过）
+- **精度问题的根因不是没记上，是单位被四舍五入吃掉**：首版 `hoursOf()` 把毫秒换成小时后 `round1()`（0.1 小时 = 6 分钟），看几分钟显示 `0.0 小时`，曲线数组也被 round 成 0、`StatBarChart` 的 `value > 0f` 不成立所以柱子不画。现统一改为**分钟**：`ViewingStats` 的时长字段存毫秒（`last7DaysMillis / weekMillis / todayMillis`），卡片用 `formatWatchDuration(millis)` 显示 `X 分钟`（不足 1 分钟显示 `X 秒`）；曲线数组以分钟浮点存储且**不再 round1**，看几分钟也有可见柱高。三张卡片字号分别 28 / 24 / 24sp 并加 `maxLines = 1`，防止中文单位撑破左栏。
+- `ui/profile/WatchListScreen.kt` 用 `WatchListType`（`HISTORY / FAVORITES / PENDING / WATCHING`）区分四种数据源，共用一个列表页：历史按一次播放会话一条、收藏按加入时间、待看 = 收藏且无播放记录、在看按 `videoId` 聚合取最近一条。每行显示海报（复用 `toLoadableImageUrl` + `rememberRetryableImageRequest`）、片名、集数 / 播放源、观看时长与时间戳，右上角显示条数，空态有专属文案。
+- `ProfileScreen` 五个原本只弹 toast 的入口（历史卡片、待看标题行、待看卡片、我的收藏、在看剧集）改为 `onOpenList(WatchListType)` 回调，经 `AnimatedMainScreen.onNavigateToWatchList` 上抛，由 `AppNavigation` 的 `watchlist/{type}` 路由打开列表页。**「去发现 / 去追剧」CTA 文案与卡片布局保持原样**，只换点击行为；`ProfileScreen` 不再需要 `onShowToast`。
+- **跳详情必须现取线路**：Store 只存最小展示字段，`resolveDetail()` 先查 `selectedDetail / realVodList / categoryVodList`（要求 `routes.isNotEmpty()`），没命中再 `TvBoxRepository.searchAll(title)` 取片名**精确同名**的第一条，8s 超时；命中后由路由层写回 `selectedDetail` 再 navigate。**绝不能用 `VideoDetailData.createFromMovie` 兜底** —— 那份带的是官方测试流，点开会放错片；查找失败只弹「未找到该影片的可用播放源」，不硬跳。
+- 已知取舍：列表页在 NavHost 里是独立路由，从列表点进详情再返回会回到列表页；但继续返回到 `home` 时 `HorizontalPager` 会重组回第 0 页（既有行为，其它 Tab 进详情也一样），本轮未改主界面 Pager 状态。
 
 ---
 
@@ -347,7 +369,8 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 5. **PiP 与手势、跨站聚合均未经用户在真机上逐条验收**（2026-11-07 提交时用户要求跳过手势测试直接做下一项；PiP 由 Agent 自测通过：进/出小窗无 Activity 重建、画面正常、比例正确）。跨站聚合的「点击切换跨站线路」一项未实测（测试中途用户开始用手机，停止操作）。
 6. 首页部分海报偶发灰底不显示（图片 CDN 问题，查 `MB-IMG`）。
 7. 源数据问题（非 App 缺陷，改不了客户端）：FEIFAN 线路对部分剧集报「媒体流编码格式无法识别」，切 FFM3U8 或跨站线路可播；现已由 10.5 的自动接力兜住，无需用户手动切。
-8. **「我的」页统计与追剧仍是假数据**：`ProfileScreen.kt` 的 `ViewingStats` 默认值写死（今日 2.1 小时、7 天曲线固定数组、24 小时柱状图 `(2..5).random()`），收藏数 / 历史区也是占位；详情页 `isFavorite` 是 `remember` 假状态，点「追剧」只弹提示、退出页面就没了。本地 DataStore 持久化已调研但**零代码改动**，是下一个性价比最高的真实增量。
+8. **「我的」页与追剧的假数据已清除，整批改动 2026-11-07 16:29 用户真机验收通过**（16:05 持久化装机、16:19 列表页与分钟级精度装机、16:26 详情页入场显示兜底装机）：`ProfileScreen.kt` 的 `ViewingStats` 已由 `WatchStore` 真实播放历史推导（默认值全 0，删掉 `(2..5).random()` 与写死的 14 部 / 3 部），两个详情页的 `isFavorite` 已换成持久化收藏；统计时长已改为分钟级，四个入口已能点开列表页。详见 8.6 / 8.7。ROADMAP 对应两条补充迭代已勾选。
+   - 残留限制（验收通过但仍是已知取舍）：`watchedMs` 含暂停 / 后台，是上界近似时长；独立播放页（直播 / 横屏）未接播放历史；列表条目跳详情需现取线路（8s 超时，找不到源就提示不跳）；**从列表进详情再返回 `home` 会落回 Pager 第 0 页（首页）**，其它 Tab 进详情也有同款既有行为，主界面 Pager 状态本轮未改。
 
 > 详情页 B 层顶部安全区已于 2026-11-07 修复并验收（Step 2.3），见 4.3。
 
@@ -356,6 +379,6 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - **详情页原地播放 + 播放源自动接力 + 线路 chip 站点名**：2026-11-07 用户验收通过并已提交，见 10.4 / 10.5。
 - **单线路影片也显示播放源**：2026-11-07 用户验收通过，见 10.3；独立播放页（直播 / 横屏）维持原样，用户明确不改。
 - **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合**：已实现并提交（9cd1385、46191c7），仍等用户逐条真机验收后再勾 ROADMAP。
-- 追剧 / 播放历史真持久化（见上面已知问题 8，无外部依赖、不碰 A/B 层与转场）。
+- 追剧 / 播放历史真持久化 + 观影列表页 / 分钟级统计（见 8.6、8.7 与已知问题 8）：**2026-11-07 16:29 用户真机验收通过，ROADMAP 两条补充迭代已勾选、已提交**；下一步可做 Step 5.2 WebDAV 同步，或先处理 16:29 用户提出的新问题。
 - Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）。
 - Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）。

@@ -21,6 +21,8 @@ import com.damon.mobilebox.ui.components.SharedPosterTransition
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import com.damon.mobilebox.ui.main.AnimatedMainScreen
 import com.damon.mobilebox.ui.player.PipController
+import com.damon.mobilebox.ui.profile.WatchListScreen
+import com.damon.mobilebox.ui.profile.WatchListType
 import com.damon.mobilebox.ui.search.SearchScreen
 import com.damon.mobilebox.ui.theme.ThemeManager
 import java.net.URLDecoder
@@ -63,7 +65,10 @@ fun AppNavigation(themeManager: ThemeManager) {
                         val encodedPoster = try { URLEncoder.encode(movie.posterUrl, "UTF-8") } catch (_: Exception) { "" }
                         navController.navigate("detail/${movie.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
                     },
-                    onNavigateToSearch = { navController.navigate("search") }
+                    onNavigateToSearch = { navController.navigate("search") },
+                    onNavigateToWatchList = { type ->
+                        navController.navigate("watchlist/${type.name}")
+                    }
                 )
             }
             composable("search") {
@@ -116,6 +121,26 @@ fun AppNavigation(themeManager: ThemeManager) {
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
                     onBack = { navController.popBackStack() }
+                )
+            }
+            composable(
+                route = "watchlist/{type}",
+                arguments = listOf(navArgument("type") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val listType = runCatching {
+                    WatchListType.valueOf(backStackEntry.arguments?.getString("type").orEmpty())
+                }.getOrDefault(WatchListType.HISTORY)
+                WatchListScreen(
+                    type = listType,
+                    onBack = { navController.popBackStack() },
+                    onOpenDetail = { detail ->
+                        // 列表里只存最小展示字段，进详情前先把真实线路挂到 selectedDetail，
+                        // 详情页的 finalData 才会拿到可播放的 routes。
+                        TvBoxRepository.selectedDetail = detail
+                        val encodedTitle = try { URLEncoder.encode(detail.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(detail.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate("detail/${detail.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
+                    }
                 )
             }
         }

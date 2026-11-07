@@ -1,6 +1,7 @@
 package com.damon.mobilebox.ui.detail
 
 import android.app.Activity
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -59,6 +60,8 @@ import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
+import com.damon.mobilebox.data.watch.FavoriteItem
+import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.ui.components.AmbientBackdrop
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
@@ -88,6 +91,17 @@ data class BTextColors(val primary: Color, val secondary: Color)
 // 用 compositionLocalOf 而不是 staticCompositionLocalOf：滚动时字色每帧都在变，
 // static 版本会让整段 content lambda 全量重组，非 static 只重组真正读取它的节点。
 val LocalBTextColors = compositionLocalOf { BTextColors(BTextPrimary, BTextSecondary) }
+
+/**
+ * 原地播放的一次观看会话。
+ * 放普通类而不是 mutableStateOf：这两个字段只在播放器首帧回调与
+ * DisposableEffect.onDispose 里读写，不需要触发重组；在 onDispose 里写 State
+ * 还可能踩到「disposal 期间写状态」。与 GestureSession 同一套路。
+ */
+private class PlaySession {
+    var recordId: String? = null
+    var startRealtime: Long = 0L
+}
 
 /**
  * 沉浸式影视详情页（整页重写）。
@@ -209,6 +223,8 @@ fun MovieDetailScreen(
     var playTarget by remember { mutableStateOf<VideoEpisode?>(null) }
     var morphBusy by remember { mutableStateOf(false) }
     val playbackScope = rememberCoroutineScope()
+    // 观看会话：首帧落地才开，换集 / 换源 / 退出播放 / 页面销毁时结算时长。
+    val playSession = remember { PlaySession() }
 
     // ---- 播放源自动接力 ----
     // attemptAnchor = 本轮起始线路下标；attemptCount = 本轮已尝试的条数（含当前）。
@@ -274,14 +290,17 @@ fun MovieDetailScreen(
     // （200ms）时接力：淡入 + 自下而上 34dp 位移 + easeOutCubic 收尾，按视觉顺序逐组铺开。
     // 进度只在 graphicsLayer 的绘制阶段读取（传 lambda 而不是值），滚动/动画都不会触发重组。
     val entrance = remember { Animatable(0f) }
+
+    // 绘制层的硬兜底：入场动画只是「视觉编排」，不能让内容的最终可读性依赖协程是否跑完。
+    // 历史故障：动画时钟被并发打断 / 子协程随父协程一起被取消时，entrance.value 会停在中间值，
+    // 后半段组（order 大）算出的 alpha 极低 —— 深色字叠在白遮罩上看着像「字变白了」，
+    // alpha 到 0 的组则像「内容显示到一半就没了」。scrollState.value 在 graphicsLayer 的
+    // 绘制阶段读取，不触发重组；只要用户真的滚过，一律落定到终值，与动画状态彻底解耦。
+    val entranceClock: () -> Float = {
+        if (scrollState.value > 0) EntranceTotalMs else entrance.value
+    }
+
     LaunchedEffect(Unit) {
-        // 用户一上手滑动就立刻收尾，避免出现"边滚边飘"的错位。
-        // 判据必须是位移量而不是 isScrollInProgress：页面刚组合时后者会瞬间为 true，
-        // 会把整段入场动画一次性 snap 到终值（实测表现为文字 1 帧全亮，等于没做）。
-        launch {
-            snapshotFlow { scrollState.value }.first { it > 0 }
-            entrance.snapTo(EntranceTotalMs)
-        }
         // 以毫秒为单位的编排时钟：线性推进，缓动在各组切片内单独做，避免双重缓动糊掉层次
         entrance.animateTo(
             targetValue = EntranceTotalMs,
@@ -291,6 +310,13 @@ fun MovieDetailScreen(
                 easing = LinearEasing
             )
         )
+    }
+    // 滚动打断必须独立成 effect：以前它是主动画 LaunchedEffect 内的 launch 子协程，
+    // 主协程 animateTo 结束 / 被取消时会连带把子协程取消，打断反而没生效。
+    // 判据仍是位移量而不是 isScrollInProgress（页面刚组合时后者会瞬间为 true）。
+    LaunchedEffect(Unit) {
+        snapshotFlow { scrollState.value }.first { it > 0 }
+        entrance.snapTo(EntranceTotalMs)
     }
     // ---- 屏外内容延迟组合（首帧削峰）----
     // 详情页首帧一次性组合全部 8 组内容（4 个 LazyRow、十余个 Chip、按钮与图标），
@@ -310,6 +336,12 @@ fun MovieDetailScreen(
     // 用户一上手滚动就立即补齐，保证任何时刻都不会缺内容
     LaunchedEffect(Unit) {
         snapshotFlow { scrollState.value }.first { it > 0 }
+        offscreenReady = true
+    }
+    // 绝对时间兜底：入场动画若因后台冻结 / 被并发取消而没跑到终值，
+    // 屏外 5 组也不能永久停在「未组合」。等满整段编排 + 一拍后无条件补齐。
+    LaunchedEffect(Unit) {
+        delay(EntranceStartDelayMs.toLong() + EntranceTotalMs.toLong() + 400L)
         offscreenReady = true
     }
 
@@ -351,7 +383,9 @@ fun MovieDetailScreen(
     var selectedEpisodeId by remember {
         mutableIntStateOf(currentRoute.episodes.firstOrNull()?.episodeId ?: 1)
     }
-    var isFavorite by remember { mutableStateOf(false) }
+    // 追剧改为真持久化：退出页面、切 Tab、重启都保留，两个播放页共用同一份收藏表。
+    val favorites by WatchStore.favorites.collectAsState()
+    val isFavorite = favorites.any { it.videoId == movieId }
 
     val routeFallbackSiteName = remember { TvBoxRepository.selectedSite.value?.name.orEmpty() }
     /** 与播放源 chip 用同一个取名字函数，保证「正在尝试 X」里的 X 就是 chip 上那行字 */
@@ -451,6 +485,21 @@ fun MovieDetailScreen(
             withFrameNanos { }
             morph.animateTo(0f, tween(280, easing = FastOutSlowInEasing))
             morphBusy = false
+        }
+    }
+
+    // 观看会话结算：key 用 playTarget。换集 / 换源（ep 对象变化）与退出播放（变 null）
+    // 都会先结算上一段；页面被 NavHost 移出时同样会 dispose，不会漏记。
+    // 计时用 elapsedRealtime，不受用户改系统时间影响。
+    DisposableEffect(playTarget) {
+        onDispose {
+            val id = playSession.recordId
+            val start = playSession.startRealtime
+            if (id != null && start > 0L) {
+                WatchStore.finishSession(id, SystemClock.elapsedRealtime() - start)
+            }
+            playSession.recordId = null
+            playSession.startRealtime = 0L
         }
     }
 
@@ -575,6 +624,23 @@ fun MovieDetailScreen(
                                 backdrop = playerBackdrop,
                                 showAmbientBackdrop = false,
                                 onBackClick = { exitPlayback() },
+                                // 只有真正出画面才算一次观看：加载失败与自动换源期间不落历史。
+                                // 同一会话内 onRenderedFirstFrame 可能多次触发，用 recordId 幂等。
+                                onFirstFrameRendered = {
+                                    if (playSession.recordId == null) {
+                                        val id = WatchStore.recordPlayback(
+                                            videoId = movieId,
+                                            title = finalData.title,
+                                            posterUrl = effectivePosterUrl,
+                                            episodeId = ep.episodeId,
+                                            episodeName = ep.name,
+                                            sourceName = routeLabel(selectedRouteIndex),
+                                            isSeries = mergedData.routes.any { it.episodes.size > 1 }
+                                        )
+                                        playSession.recordId = id
+                                        playSession.startRealtime = SystemClock.elapsedRealtime()
+                                    }
+                                },
                                 // 失败不弹播放器自己的错误卡片：交给详情页按顺序自动换播放源，
                                 // 换源期间用真实线路名提示，全部失败才出终态图标 + 文案。
                                 onSourceFailed = { onSourceFailed() },
@@ -672,7 +738,7 @@ fun MovieDetailScreen(
                                 .fillMaxWidth()
                                 // 播放态片名淡出：视频控制条里已有标题，白字压在画面上反而难读
                                 .graphicsLayer { alpha = 1f - morph.value }
-                                .entranceMotion({ entrance.value }, order = 0, rise = 30.dp)
+                                .entranceMotion(entranceClock, order = 0, rise = 30.dp)
                                 .padding(horizontal = 20.dp, vertical = 32.dp)
                         ) {
                             Text(
@@ -767,7 +833,7 @@ fun MovieDetailScreen(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 1)
+                                    .entranceMotion(entranceClock, order = 1)
                             )
                             Spacer(modifier = Modifier.height(28.dp))
 
@@ -775,7 +841,7 @@ fun MovieDetailScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 2)
+                                    .entranceMotion(entranceClock, order = 2)
                             ) {
                                 SectionTitle("播放资源")
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -854,7 +920,7 @@ fun MovieDetailScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 3)
+                                    .entranceMotion(entranceClock, order = 3)
                             ) {
                                 SectionTitle("演职人员")
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -866,7 +932,7 @@ fun MovieDetailScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 4)
+                                    .entranceMotion(entranceClock, order = 4)
                             ) {
                                 SectionTitle("分类")
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -879,7 +945,7 @@ fun MovieDetailScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 5)
+                                    .entranceMotion(entranceClock, order = 5)
                             ) {
                                 SectionTitle("预告片")
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -891,7 +957,7 @@ fun MovieDetailScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 6)
+                                    .entranceMotion(entranceClock, order = 6)
                             ) {
                                 SectionTitle("剧照")
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -903,7 +969,7 @@ fun MovieDetailScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .entranceMotion({ entrance.value }, order = 7),
+                                    .entranceMotion(entranceClock, order = 7),
                                 horizontalArrangement = Arrangement.SpaceAround
                             ) {
                                 DetailAction(
@@ -911,8 +977,15 @@ fun MovieDetailScreen(
                                     label = if (isFavorite) "已追剧" else "追剧",
                                     active = isFavorite,
                                     onClick = {
-                                        isFavorite = !isFavorite
-                                        onShowToast(if (isFavorite) "已加入追剧清单" else "已取消追剧")
+                                        WatchStore.toggleFavorite(
+                                            FavoriteItem(
+                                                videoId = movieId,
+                                                title = finalData.title,
+                                                posterUrl = effectivePosterUrl
+                                            )
+                                        )
+                                        // 这里读的是点击前的状态：true 表示本次操作是取消。
+                                        onShowToast(if (isFavorite) "已取消追剧" else "已加入追剧清单")
                                     }
                                 )
                                 DetailAction(Icons.Default.Download, "离线缓存") { onShowToast("已加入后台高速下载任务") }

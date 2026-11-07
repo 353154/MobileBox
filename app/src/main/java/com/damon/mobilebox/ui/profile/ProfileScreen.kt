@@ -17,6 +17,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,55 +31,146 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.damon.mobilebox.data.watch.FavoriteItem
+import com.damon.mobilebox.data.watch.WatchRecord
+import com.damon.mobilebox.data.watch.WatchStore
+import java.util.Calendar
 
 // ==========================================
-// 1. 预留的数据接口层 (供 ViewModel 绑定真实数据)
+// 1. 数据层：全部由 WatchStore 的真实播放历史推导，默认值一律为 0
 // ==========================================
 data class ViewingStats(
-    val last7DaysHours: Float = 12.5f,
-    val weekHours: Float = 8.2f,
-    val weekMovies: Int = 3,
-    val weekEpisodes: Int = 12,
-    val todayHours: Float = 2.1f,
-    val todayMovies: Int = 1,
-    val todayEpisodes: Int = 2,
-    val weekDateRange: String = "11月1日 - 7日",
+    val last7DaysMillis: Long = 0L,
+    val weekMillis: Long = 0L,
+    val weekMovies: Int = 0,
+    val weekEpisodes: Int = 0,
+    val todayMillis: Long = 0L,
+    val todayMovies: Int = 0,
+    val todayEpisodes: Int = 0,
+    val weekDateRange: String = "",
     val todayDate: String = "今天",
-    // 用于图表渲染的具体数据列表
-    val last7DaysData: List<Float> = listOf(1.5f, 2.0f, 0.5f, 3.2f, 1.0f, 0.0f, 4.3f), // 7天数据
+    // 曲线数据单位统一为「分钟」，不再 round1：看几分钟也能画出可见的柱子
+    val last7DaysData: List<Float> = List(7) { 0f },
     val weekDaysLabels: List<String> = listOf("日", "一", "二", "三", "四", "五", "六"),
-    val today24hData: List<Float> = List(24) { index ->
-        when (index) {
-            in 19..22 -> (2..5).random().toFloat()
-            in 12..13 -> 1.5f
-            in 8..9 -> 0.8f
-            else -> 0f
+    val today24hData: List<Float> = List(24) { 0f }
+)
+
+private const val DAY_MS = 24L * 60 * 60 * 1000
+private const val MINUTE_MS = 60_000L
+private val WEEKDAY_LABELS = listOf("日", "一", "二", "三", "四", "五", "六")
+
+private fun minutesOf(millis: Long): Float = millis.coerceAtLeast(0L) / MINUTE_MS.toFloat()
+
+/**
+ * 精确到分钟的时长文案。不足 1 分钟退化为秒，避免刚出画面就显示「0 分钟」。
+ * 统计卡片与 [WatchListScreen] 的列表项共用这一个格式化口径。
+ */
+fun formatWatchDuration(millis: Long): String {
+    val seconds = millis.coerceAtLeast(0L) / 1000L
+    if (seconds < 60L) return "${seconds.coerceAtLeast(1L)} 秒"
+    return "${seconds / 60L} 分钟"
+}
+
+/**
+ * 用真实播放记录算统计，界面文案一个字不改。
+ * watchedMs 是「本次播放会话的墙上时间」，含暂停 / 后台，是上界近似值；
+ * 电影按影片 id 去重，剧集按开播次数计；跨小时的会话整段记在开播的那个小时里。
+ * minSdk 24，用 Calendar 而不是 java.time，不引入 desugaring。
+ */
+private fun buildViewingStats(history: List<WatchRecord>): ViewingStats {
+    val todayStart = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+    val dayStarts = (6 downTo 0).map { todayStart - it * DAY_MS }
+    val dailyMinutes = FloatArray(7) { 0f }
+    val hourlyMinutes = FloatArray(24) { 0f }
+    val weekMovies = mutableSetOf<String>()
+    val todayMovies = mutableSetOf<String>()
+    var weekEpisodes = 0
+    var todayEpisodes = 0
+    var weekMillis = 0L
+    var todayMillis = 0L
+
+    history.forEach { record ->
+        val millis = record.watchedMs.coerceAtLeast(0L)
+        val minutes = minutesOf(millis)
+        val dayIndex = dayStarts.indexOfFirst { record.startedAt >= it && record.startedAt < it + DAY_MS }
+        if (dayIndex >= 0) {
+            dailyMinutes[dayIndex] += minutes
+            weekMillis += millis
+            if (record.isSeries) weekEpisodes++ else weekMovies += record.videoId
+        }
+        if (record.startedAt >= todayStart) {
+            todayMillis += millis
+            if (record.isSeries) todayEpisodes++ else todayMovies += record.videoId
+            val hour = Calendar.getInstance().apply { timeInMillis = record.startedAt }
+                .get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+            hourlyMinutes[hour] += minutes
         }
     }
-)
+
+    val first = Calendar.getInstance().apply { timeInMillis = dayStarts.first() }
+    val last = Calendar.getInstance().apply { timeInMillis = dayStarts.last() }
+    val dateRange = "${first.get(Calendar.MONTH) + 1}月${first.get(Calendar.DAY_OF_MONTH)}日" +
+        " - ${last.get(Calendar.DAY_OF_MONTH)}日"
+
+    return ViewingStats(
+        last7DaysMillis = weekMillis,
+        weekMillis = weekMillis,
+        weekMovies = weekMovies.size,
+        weekEpisodes = weekEpisodes,
+        todayMillis = todayMillis,
+        todayMovies = todayMovies.size,
+        todayEpisodes = todayEpisodes,
+        weekDateRange = dateRange,
+        todayDate = "今天",
+        last7DaysData = dailyMinutes.toList(),
+        weekDaysLabels = dayStarts.map { start ->
+            val c = Calendar.getInstance().apply { timeInMillis = start }
+            WEEKDAY_LABELS[(c.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)]
+        },
+        today24hData = hourlyMinutes.toList()
+    )
+}
 
 // ==========================================
 // 2. 主页面入口 (已移除 Damon 个人信息头部)
 // ==========================================
 @Composable
 fun ProfileScreen(
-    stats: ViewingStats = ViewingStats(),
-    onShowToast: (String) -> Unit = {}
+    stats: ViewingStats? = null,
+    onOpenList: (WatchListType) -> Unit = {}
 ) {
+    // 收藏与历史都来自 WatchStore 的共享 StateFlow：详情页点完「追剧」回到本页即刻可见，
+    // 重启后也在。stats 保留为可空覆盖入口，正常业务不传，一律由真实历史推导。
+    val favorites by WatchStore.favorites.collectAsState()
+    val history by WatchStore.history.collectAsState()
+    val effectiveStats = remember(stats, history) { stats ?: buildViewingStats(history) }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 16.dp, bottom = 100.dp) // 顶部微距，底部留出悬浮导航栏安全区
     ) {
         // 核心：横向滑动的统计卡片区域 (三页结构：最近7天 / 本周观看 / 今天)
-        item { StatsPagerSection(stats) }
+        item { StatsPagerSection(effectiveStats) }
 
         item { Spacer(modifier = Modifier.height(16.dp)) }
 
         // 历史观看模块
-        item { HistorySection(onShowToast = onShowToast) }
+        item { HistorySection(history = history, onOpenList = onOpenList) }
 
         // 待看与功能网格模块
-        item { WatchlistAndGridSection(onShowToast = onShowToast) }
+        item {
+            WatchlistAndGridSection(
+                favorites = favorites,
+                history = history,
+                onOpenList = onOpenList
+            )
+        }
     }
 }
 
@@ -186,8 +280,14 @@ fun Last7DaysContent(stats: ViewingStats) {
                     .fillMaxHeight(),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text("${stats.last7DaysHours}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                Text("观影总时长 (小时)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    formatWatchDuration(stats.last7DaysMillis),
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Text("观影总时长", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             // 右侧嵌入通用柱状图
@@ -229,7 +329,13 @@ fun ThisWeekContent(stats: ViewingStats) {
                     .fillMaxHeight(),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text("${stats.weekHours} 小时", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    formatWatchDuration(stats.weekMillis),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     "${stats.weekMovies} 部电影\n${stats.weekEpisodes} 集剧集",
@@ -278,7 +384,13 @@ fun TodayContent(stats: ViewingStats) {
                     .fillMaxHeight(),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text("${stats.todayHours} 小时", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    formatWatchDuration(stats.todayMillis),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     "${stats.todayMovies} 部电影\n${stats.todayEpisodes} 集剧集",
@@ -417,12 +529,19 @@ private fun EmptyStateCta(label: String) {
 }
 
 @Composable
-fun HistorySection(onShowToast: (String) -> Unit = {}) {
+fun HistorySection(
+    history: List<WatchRecord> = emptyList(),
+    onOpenList: (WatchListType) -> Unit = {}
+) {
+    val latest = history.firstOrNull()
+    val latestLabel = latest?.let {
+        listOf(it.title, it.episodeName).filter { part -> part.isNotBlank() }.joinToString(" · ")
+    }.orEmpty()
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
         Text("历史观看", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
         Spacer(modifier = Modifier.height(8.dp))
         Card(
-            onClick = { onShowToast("打开完整观看历史") },
+            onClick = { onOpenList(WatchListType.HISTORY) },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(68.dp),
@@ -453,7 +572,7 @@ fun HistorySection(onShowToast: (String) -> Unit = {}) {
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Text(
-                    text = "暂无未播完的记录",
+                    text = latestLabel.ifBlank { "暂无未播完的记录" },
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -467,12 +586,20 @@ fun HistorySection(onShowToast: (String) -> Unit = {}) {
 }
 
 @Composable
-fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
+fun WatchlistAndGridSection(
+    favorites: List<FavoriteItem> = emptyList(),
+    history: List<WatchRecord> = emptyList(),
+    onOpenList: (WatchListType) -> Unit = {}
+) {
+    // 待看 = 收藏了但还没有任何播放记录；在看 = 有播放记录的不同影片数。
+    val watchedIds = remember(history) { history.map { it.videoId }.toSet() }
+    val pendingCount = favorites.count { it.videoId !in watchedIds }
+    val watchingCount = watchedIds.size
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onShowToast("打开待看片单") }
+                .clickable { onOpenList(WatchListType.PENDING) }
                 .padding(vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -484,7 +611,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
         
         // 待看卡片 (紧凑瘦身，消除大面积留白与空洞感，统一收敛交互)
         Card(
-            onClick = { onShowToast("前往发现影片并加入片单") },
+            onClick = { onOpenList(WatchListType.PENDING) },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(68.dp),
@@ -515,7 +642,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Text(
-                    text = "暂无待看影片",
+                    text = if (pendingCount > 0) "$pendingCount 部待看影片" else "暂无待看影片",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -530,7 +657,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
         // 收藏与在看网格 (双列紧凑堆叠：主题色大字重数据 + 灰色辅助说明)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Card(
-                onClick = { onShowToast("打开我的收藏 (14部)") },
+                onClick = { onOpenList(WatchListType.FAVORITES) },
                 modifier = Modifier
                     .weight(1f)
                     .height(72.dp),
@@ -545,13 +672,13 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("14", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("${favorites.size}", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("我的收藏", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Card(
-                onClick = { onShowToast("正在追更在看 (3部)") },
+                onClick = { onOpenList(WatchListType.WATCHING) },
                 modifier = Modifier
                     .weight(1f)
                     .height(72.dp),
@@ -566,7 +693,7 @@ fun WatchlistAndGridSection(onShowToast: (String) -> Unit = {}) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("3", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("$watchingCount", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("在看剧集", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

@@ -24,6 +24,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.damon.mobilebox.data.watch.FavoriteItem
+import com.damon.mobilebox.data.watch.WatchStore
 
 private val PlayerBackground = Color(0xFF0A0E17)
 private val PlayerPrimary = Color(0xFF2F81F7)
@@ -57,7 +59,9 @@ fun PlayerDetailScreen(
         ?: currentRoute.episodes.firstOrNull()
         ?: VideoEpisode(1, "第 1 集", "")
 
-    var isFavorite by remember { mutableStateOf(false) }
+    // 与详情页原地播放共用同一份持久化收藏，不再是退出即丢的本地 remember。
+    val favorites by WatchStore.favorites.collectAsState()
+    val isFavorite = favorites.any { it.videoId == videoData.id }
 
     val cleanYear = remember(videoData.year) {
         val digits = videoData.year.filter { it.isDigit() }
@@ -200,8 +204,14 @@ fun PlayerDetailScreen(
                             label = if (isFavorite) "已追剧" else "追剧",
                             isActive = isFavorite,
                             onClick = {
-                                isFavorite = !isFavorite
-                                onShowToast(if (isFavorite) "已加入您的追剧清单" else "已取消追剧")
+                                WatchStore.toggleFavorite(
+                                    FavoriteItem(
+                                        videoId = videoData.id,
+                                        title = videoData.title,
+                                        posterUrl = videoData.posterUrl
+                                    )
+                                )
+                                onShowToast(if (isFavorite) "已取消追剧" else "已加入您的追剧清单")
                             }
                         )
                         PlayerActionButton(
