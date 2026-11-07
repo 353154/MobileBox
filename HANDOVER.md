@@ -304,6 +304,8 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - 注意：线路名 FEIFAN/FFM3U8 等是上游 `vod_play_from` 标识，**不代表站点**。
 - **线路 chip 统一带来源站点名（2026-11-07，已验收）**：`VideoRoute.siteName` 由数据层 `parseMacCmsVodToDetail(vod, site.name)` 填入，5 个生成入口（首页/分类/跨站搜索/跨站聚合/分类独立拉取）全覆盖；UI 统一走 `PlayerModels.displayName()` = `站名·线路名 标签`（站名截掉括号内营销后缀）。此前只有跨站聚合手工把站名拼进 `routeName`，当前站的 FEIFAN/FFM3U8 没有前缀，用户看不出属于哪个配置源。跨站聚合现在只标 `siteName` + 保留 `routeId` 的站 key 前缀，不再改 `routeName`。详情页 `RouteChips` 与 `PlayerDetailScreen` 播放源列表同步生效；占位/旧数据无 `siteName` 时兜底用当前激活站点名。
 
+- **单线路影片也显示播放源（2026-11-07 已验收）**：播放态（`:724`）与浏览态（`:826`）两处「播放源」区块原本都套着 `mergedData.routes.size > 1`，影片只有一条线路时整块（连 `SectionTitle`）被隐藏；选集块没有这个条件，所以表现成用户看到的「播放后只剩选集」。之前「绝命杀手第二季」有 2 条线路所以一直没暴露。两处统一放宽为 `mergedData.routes.isNotEmpty()`，顺序仍是「选集 → 播放源」；配合 `siteName` / `displayName()`，单线路也能看出当前是哪个站点、哪条源。**注意：独立播放页 `PlayerDetailScreen.kt:226`（直播 / 横屏使用）仍保留 `size > 1`，用户 2026-11-07 15:56 明确「那个不改了」，别顺手统一。**
+
 ### 10.4 详情页原地播放（2026-11-07 用户验收通过）
 用户称「锚点重置与空间自适应原地播放」。点播放不再弹独立全屏播放页，改为详情页内三相位连续过渡，**这是点播的现行入口，`PlayerDetailScreen` 只在直播 / 横屏使用**。
 
@@ -352,6 +354,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 **下一步（按 ROADMAP）**
 - **阶段二已全部关闭**（Step 2.1 / 2.2 / 2.3 / 2.4 均验收通过）
 - **详情页原地播放 + 播放源自动接力 + 线路 chip 站点名**：2026-11-07 用户验收通过并已提交，见 10.4 / 10.5。
+- **单线路影片也显示播放源**：2026-11-07 用户验收通过，见 10.3；独立播放页（直播 / 横屏）维持原样，用户明确不改。
 - **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合**：已实现并提交（9cd1385、46191c7），仍等用户逐条真机验收后再勾 ROADMAP。
 - 追剧 / 播放历史真持久化（见上面已知问题 8，无外部依赖、不碰 A/B 层与转场）。
 - Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）。

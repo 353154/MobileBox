@@ -721,7 +721,9 @@ fun MovieDetailScreen(
                                     )
                                     Spacer(modifier = Modifier.height(22.dp))
                                 }
-                                if (mergedData.routes.size > 1) {
+                                // 单线路也要显示：用户要能看出「当前用的是哪个站点/哪条源」，
+                                // 原来 size > 1 会让只有一条线路的影片整块（连标题）消失。
+                                if (mergedData.routes.isNotEmpty()) {
                                     SectionTitle("播放源")
                                     Spacer(modifier = Modifier.height(12.dp))
                                     RouteChips(
@@ -821,7 +823,8 @@ fun MovieDetailScreen(
                                         onPlayEpisode(ep)
                                     }
                                 )
-                                if (mergedData.routes.size > 1) {
+                                // 与播放态一致：单线路也展示当前播放源，不要让它无故消失
+                                if (mergedData.routes.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(14.dp))
                                     RouteChips(
                                         routes = mergedData.routes,
