@@ -1,89 +1,234 @@
-# MobileBox 影视流媒体 App 完整交接与开发维护文档
+# MobileBox 交接与开发维护文档
 
-> **文档版本**：v2.0 (全页面 UI 规范升级与动效重构交付版)  
-> **更新时间**：2026-11-06  
-> **分支**：`main`  
-> **Git 远端**：`https://github.com/353154/MobileBox.git`
+> **文档版本**：v3.0（详情页重写 · 动效定案 · 数据链路加固交付版）
+> **更新时间**：2026-11-07
+> **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
+> **当前规模**：35 个 Kotlin 文件，约 9.5k 行
+> **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
----
-
-## 一、 项目背景与重构概述
-
-本项目为基于 **Jetpack Compose + Material 3 + Media3 (ExoPlayer/MPV)** 的现代化 Android 影视与电视直播流媒体客户端。
-近期重点攻克了两大维度的体验与工程难题：
-1. **转场动效与架构稳定性**：攻克共享元素转场时序遮挡冲突、标题首帧闪烁与分类页回退重新加载（状态丢失）。
-2. **全局五大核心页面 UI 精细化重塑**：解决底部导航栏挤压、全局对比度发虚、文本撑破双列网格、直播容器圆角打架、设置项视线引导线断裂及个人中心指标空洞等问题。
+本文档面向「接手继续开发的人或 Agent」。**第六章（详情页）与第七章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
 
 ---
 
-## 二、 核心重构成果详解
+## 一、项目速览
 
-### 1. 共享元素转场与详情页时序编排 (MovieDetailScreen & AppNavigation)
-- **根因诊断**：Compose `Modifier.sharedBounds` 在转场期间（0~380ms）将海报置于根窗口全局 `Overlay` 顶层。此前详情页内容区使用了负向位移 `Spacer(heroHeight - 48.dp)`，使标题恰好落入海报底部黑色渐变遮罩内。转场期间标题被海报 Overlay 完全遮蔽，转场结束时海报退出 Overlay 瞬间标题暴露，形成突兀的“跳出/闪烁”。
-- **修复方案**：
-  - 详情页占位精确对齐 `Spacer(modifier = Modifier.height(heroHeight))`，海报 Overlay 不遮挡标题任何像素。
-  - 路由 `detail/{movieId}?title={title}&poster={poster}` 在第 0 帧直接透传片名与海报，从源头消灭空标题。
-  - `contentAlpha`（延迟 60ms）与 `contentSlideY`（24dp 上浮）顺畅交错淡入，与海报着陆同频。
-  - 海报高度克制在 33% 屏高（~240-270dp），首屏立即可见“立即播放”与选集，无需下滑。
+基于 **Jetpack Compose + Material 3 + Media3 (ExoPlayer)** 的原生竖屏影视客户端，数据侧直连 TVBox 订阅源（JSON 配置 → 站点规则 → 列表/详情/播放地址）。
 
-### 2. 状态持久化与 0ms 回退恢复 (TvBoxRepository & CategoryScreen)
-- **根因诊断**：原分类页将数据保存在本地 `remember { mutableStateOf }` 中，页面离开销毁后重组为 `emptyList()`，反复触发网络请求与加载菊花。
-- **修复方案**：数据上移至 `TvBoxRepository` 二级缓存池 `categoryVodCache` 与 StateFlow 托管，从详情页返回时 0ms 闪电恢复，无需二次拉取。初次加载采用 1200ms 双色平滑线性扫光骨架屏。
-
-### 3. 全局五大页面 UI 规范与体验升级
-
-#### 3.1 全局与底层组件 (Global & Components)
-- **底部导航栏**：
-  - 指示器胶囊扩容至 `56.dp × 30.dp`，给予足够的横向呼吸空间，标签文本与胶囊边缘不再贴合。
-  - 导航图标全面引入 **Outlined（未选中线框态）** 与 **Filled（选中实心填充态）** 双重感知（首页、分类、直播、设置、我的）。
-- **全局色彩对比度**：
-  - 浅色模式底色统一修正为纯正浅灰 **`#F2F2F7`**，移除导致卡片发虚的径向渐变雾化。
-  - 所有卡片组件配置 `0.5.dp` 对比微边框（`outlineVariant.copy(alpha = 0.35f)`），边界清晰利落。
-
-#### 3.2 首页 & 分类页 (Home & Category)
-- **长文本截断**：[`StandardPosterCard.kt`](file:///Users/damon/Documents/MobileBox/app/src/main/java/com/damon/mobilebox/ui/components/StandardPosterCard.kt) 强制设定 `maxLines = 1`、`overflow = TextOverflow.Ellipsis` 与 `Modifier.fillMaxWidth()`，杜绝长字段撑高单项破坏网格垂直对齐。
-- **分类 Filter Chips**：取消未选中的隐形极浅边框，直接采用可点击辨识度高的 `surfaceVariant`（`#E5E5EA`）浅灰底色，选中态使用主题色高亮，完全符合无障碍标准（A11y）。
-
-#### 3.3 电视直播页 (Live TV)
-- **圆角统一**：顶部播放器外框从夸张的 `20.dp+` 统一修正为 **`16.dp`**，与下方频道卡片严格对齐。
-- **LIVE 胶囊内嵌**：红色 LIVE 胶囊完全移入播放器内部安全区域（`padding(16.dp)`），配合呼吸圆点指示灯，消除切断外框的“贴纸感”。
-- **横向滑动渐变暗示 (Fading Edge)**：频道分类滑动栏右侧叠加 `32.dp` 透明至背景色的水平渐变消隐遮罩，明确提示右侧可继续水平滑动。
-
-#### 3.4 设置页 (Settings)
-- **视线引导线对齐**：为“MPV 高性能解码内核”补充统一的芯片图标（`Icons.Default.Memory`）与 `Spacer(14.dp)`，彻底消除主副标题左侧对齐断崖。
-- **分组标题强化**：标题字重调整为 `FontWeight.Bold`（14.sp），颜色提升至高对比度 `onSurface`，拉大段落间距。
-
-#### 3.5 我的页面 (Profile)
-- **数据指标排版**：“我的收藏”与“在看剧集”重构为**24.sp 主题色大字重粗体数据 + 12.sp 辅助说明**的紧凑单列堆叠布局。
-- **空状态卡片瘦身**：“历史观看”与“待看片单”空状态卡片高度压缩至 **68.dp**，采用圆形浅色图标底座 + 横向说明文案，消除大面积空洞感。
-- **行动号召收敛**：移除卡片内多余冲突的“点击添加”提示，逻辑完全收敛至单一路标。
+| 维度 | 现状 |
+| :--- | :--- |
+| UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载 |
+| 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化 |
+| 播放 | Media3 ExoPlayer，`PlayerDetailScreen` 全屏播放层，解码器可在设置切换 |
+| 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 |
+| 数据 | 纯客户端直连，无后端；`TvBoxParser` 解析订阅，`TvBoxRepository` 统一状态源 |
+| 依赖注入 | Hilt |
 
 ---
 
-## 三、 修改文件清单索引
+## 二、模块地图
 
-| 文件路径 | 修改模块 | 核心改动点 |
+| 路径 | 职责 | 注意点 |
 | :--- | :--- | :--- |
-| `ui/main/AnimatedMainScreen.kt` | 导航栏 / 直播 / 设置 | 底栏双态图标与胶囊扩容、直播 16dp 圆角与 Fading Edge、MPV 图标对齐与分组增强 |
-| `ui/components/ModernBackgroundContainer.kt` | 全局背景 | 移除模糊雾化渐变，提供纯正 `#F2F2F7` / `#0E121A` 高对比度基底 |
-| `ui/theme/AppTheme.kt` | 主题色板 | 配置标准轻量灰底色与细边框色彩规范 |
-| `ui/components/StandardPosterCard.kt` | 基础组件 | 标题/副标题强制单行 Ellipsis 截断，`key = "poster_${movieId.trim()}"` 统一对齐 |
-| `ui/category/CategoryScreen.kt` | 分类页面 | 移除临时状态接入持久化 Repository，重构 Filter Chip 浅灰实心无边框底色 |
-| `ui/profile/ProfileScreen.kt` | 个人中心 | 空状态瘦身至 68dp、指标主题色大字重聚焦、行动号召与点击区域整合 |
-| `ui/navigation/AppNavigation.kt` | 根路由 | 路由原生透传 `title` 与 `poster` 参数，解决首帧片名空占位 |
-| `ui/detail/MovieDetailScreen.kt` | 详情页面 | 解除海报全局 Overlay 遮挡，重构 Spacer 与底部消融渐变，交错时序编排 |
-| `data/tvbox/TvBoxRepository.kt` | 数据仓库 | 引入 `categoryVodCache` 内存持久池，实现 0ms 回退无感恢复 |
+| `MobileBoxApp.kt` / `ui/main/MainActivity.kt` | 应用入口、Hilt、Edge-to-Edge | — |
+| `ui/main/AnimatedMainScreen.kt` | **五大 Tab 容器**（Pager + 底栏 + 各页组合） | 底栏图标自绘、跨 Tab `scrollToPage`、直播页所有状态都在这 |
+| `ui/navigation/AppNavigation.kt` | `NavHost` + `SharedTransitionLayout` + detail 路由 | 转场时长统一 280ms；`DisposableEffect` 维护 `SharedPosterTransition.activeKey` |
+| `ui/components/StandardPosterCard.kt` | **全局唯一海报卡片** | 3D 视差 + `sharedBounds` + `parallaxWeight` 抑制，层级结构不可随意调整 |
+| `ui/components/ParallaxEffect.kt` | 陀螺仪角度（相对握持基线）+ 应用级常驻监听 | 见 7.3 |
+| `ui/components/PosterTone.kt` | 海报明暗采样，决定叠在海报上的字色 | 见 6.5 |
+| `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场）** | 全项目最敏感的文件，改之前读第六章 |
+| `ui/components/StandardPullToRefreshBox.kt` | 自研下拉刷新（内容跟手位移） | 不要换成 M3 `PullToRefreshBox` |
+| `ui/components/ImageUrlCompat.kt` | 图片 URL 降级 + 失败重试 | 采集站 CDN 只支持 http |
+| `ui/components/LiveStreamPreview.kt` | 直播静音预拉流 + 实时模糊 | TextureView（SurfaceView 无法被 Compose 模糊） |
+| `ui/components/BingWallpaper.kt` | 5 张 Bing 壁纸缓存 + 轮播 + Ken Burns | 首帧回调后淡出 |
+| `ui/components/NavGlyphIcon.kt` | 5 枚自绘底栏图标（线框/实心双态） | 线宽统一靠这里 |
+| `ui/components/HorizontalScrollFadingEdge.kt` | 横向滚动双向渐隐 | 按可滚方向动态 |
+| `ui/player/*` | 播放器页与数据模型 | 控制按钮用 M3 原生 |
+| `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
+| `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/选中站点） | 幂等初始化，见 8.3 |
 
 ---
 
-## 四、 本地环境与调试指令
+## 三、五大页面现状
 
-- **JDK 17 路径**：`/Users/damon/.tools/jdk-17.0.21+9/Contents/Home`
-- **一键打包编译**：
-  ```bash
-  export JAVA_HOME=/Users/damon/.tools/jdk-17.0.21+9/Contents/Home && export PATH=$JAVA_HOME/bin:/Users/damon/Android/sdk/cmdline-tools/latest/bin:/Users/damon/platform-tools:$PATH && cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
-  ```
-- **一键安装并冷启真机调试**：
-  ```bash
-  /Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 install -r /Users/damon/Documents/MobileBox/app/build/outputs/apk/debug/app-debug.apk && /Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 shell am force-stop com.damon.mobilebox && /Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 shell am start -n com.damon.mobilebox/.ui.main.MainActivity
-  ```
+- **首页**：双列 2:3 海报网格；下拉刷新内容跟手；程序化加载不显示顶部圈；3D 陀螺仪视差。
+- **分类**：两级 FilterChip（分类/排序）+ 双层缓存（内存 + `TvBoxRepository`），返回 0ms 恢复。
+- **直播**：分组 chips → 频道列表；右侧详情区静音预拉流并实时高斯模糊，加载期 Bing 壁纸轮播；**点播放按钮才开始播放**；EPG 有数据才显示，没有就整行不出现。
+- **设置**：主题、色盘、3D 开关、解码器、订阅源管理。开关状态一律走 `StateFlow`（见 7.4）。
+- **我的**：收藏/在看的指标卡 + 空状态（68dp 紧凑行）。
+
+---
+
+## 四、详情页规范（A/B 层级）
+
+**这是用户逐帧对照参考视频定下的规范，不是个人审美，改之前先确认。**
+
+### 4.1 A 层：只有海报
+- 全屏固定海报（`fillMaxSize`，`ContentScale.Crop`，只裁左右，纵向完整），**零 `translationY`**，绝不随手势上移。
+- `Alpha` 恒为 1，不做淡入淡出。
+- 滚动时只做 `1.0 → 1.06` 的轻微放大（`graphicsLayer`，`p = scroll / heroHeight`）。
+- 内层 `sharedBounds(key = "poster_{movieId}")`，`ResizeMode.ScaleToBounds()`，`clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(0.dp))`。
+- **A 层不允许出现任何文字**（片名、年份、评分都属于 B 层）。
+
+### 4.2 遮罩层：整屏均匀交叉淡入
+- 一层全屏矩形，颜色取 `MaterialTheme.colorScheme.surface`，`drawBehind { drawRect(surface.copy(alpha = p)) }`，`p = scroll / (heroHeightPx * 0.65f)`。
+- **浅色主题 = 整屏变白**；**深色主题 = 整屏压暗**。两者都是「均匀交叉淡入」，不是面板从下往上盖。
+- 禁止写法：`Box(background(Black)).graphicsLayer { alpha = p }` —— 会把整层盖成不透明纯黑。
+
+### 4.3 B 层：只有 Y 位移
+- 独立 `fillMaxSize().verticalScroll()`，声明在遮罩之后，因此绘制在其上。
+- 首块是 `height(heroHeight)` 的**透明** Box（片名底部对齐），其后是简介 / 播放资源 / 演职人员 / 分类 / 预告片 / 剧照 / 操作行。
+- 内容面板**完全透明**，不加任何背景。
+
+### 4.4 禁止添加的装饰（都被用户明确要求删过）
+铺满首块的黑阶、片名局部暗底、内容面板「透明→白」空间渐变、衔接暗色层、纯白硬切面板、随滚动加深的黑 Scrim、132dp 大留白、浮动按钮。这些都会切出水平硬边或脏灰带。
+
+### 4.5 字色
+- `LocalBTextColors`（`staticCompositionLocalOf`）提供 `primary/secondary`。
+- **起点**由海报亮度决定（见 6.5）：深色海报 → 白字；浅色海报 → 近黑字。
+- **终点**跟随主题：`surface.luminance() > 0.5` → `BTextPrimary/BTextSecondary`（近黑/中灰），否则 `BTextPrimaryDark/BTextSecondaryDark`（近白/浅灰）。
+- 中途 `lerp(起点, 终点, veilProgress)`。
+- **压在固定浅底上的文字必须用固定 `BTextPrimary`**：`立即播放` 按钮（容器 `#E4E7EE`）、演职人员头像首字（固定莫兰迪底色）。跟随动态字色会在深色主题下变成白字压浅灰。
+- 状态栏图标：浅色主题 `prefersDarkSystemBar || veil > 0.5`；深色主题 `prefersDarkSystemBar && veil < 0.5`（滚上去背景变暗必须换回浅色图标）。
+
+### 4.6 交错式入场
+- 时钟：`entrance: Animatable<Float>` 从 `0 → EntranceTotalMs` 线性推进，**缓动在各组切片内单独做**（避免双重缓动糊掉层次）。
+- 8 组按视觉顺序：片名区 → 简介 → 播放资源 → 演职人员 → 分类 → 预告片 → 剧照 → 操作行。
+- 参数（`MovieDetailScreen.kt` 末尾）：`EntranceStartDelayMs = 200f`（海报转场 280ms 的 ~72% 处接力）、`EntranceRiseDurationMs = 320f`、`EntranceStaggerMs = 40f`，`EntranceTotalMs = 320 + 40*7 = 600ms`。
+- 动势：`alpha 0→1` + 自下而上 `30~34dp`，组内 easeOutCubic。
+- 实现：`Modifier.entranceMotion({ entrance.value }, order, rise)` 在 `graphicsLayer` 里读 lambda → **绘制阶段取时钟，动画每帧只重绘不重组**。
+- **打断条件绝不能用 `scrollState.isScrollInProgress`**：页面刚组合时它会瞬间为 `true`，`snapTo(终值)` 会把整段动画一帧跳过（表现为文字 3 帧全亮，极易误判成「动画没接上」）。必须用 `snapshotFlow { scrollState.value }.first { it > 0 }`。
+
+---
+
+## 五、共享元素转场 + 3D 视差（定案，别再翻案）
+
+### 5.1 现象与结论
+用户反复报告「进入/返回详情页时，只有点进去的那张卡片抖一下」，并给出关键判据：**关掉 3D 开关就完全不抖**。
+
+**根因**：`sharedBounds` 在转场期间把匹配元素提升进 `SharedTransitionLayout` 的全局 Overlay 重放，而两端绘制内容天生不一致——首页卡片带 3D 透视/角标/流光，详情页 A 层是纯海报。全屏只有被点中那张有匹配 key，所以只有它经历这次内容切换。把 3D 放内层 = 跳变落在起始帧；放外层 = 跳变落在收尾帧。**挪层级只是挪动跳变位置，不解决问题。**
+
+### 5.2 现行解法
+- `object SharedPosterTransition { val activeKey = mutableStateOf<String?>(null) }`
+- `AppNavigation` 的 detail composable 用 `DisposableEffect(movieId)` 写入/清空。NavHost 要等 280ms 返回动画跑完才 dispose，所以**整个转场期间 key 都为真，Overlay 消失之后才清空**——时序天然对齐。
+- 卡片用 `snapshotFlow { activeKey == posterKey }.distinctUntilChanged()` 驱动 `Animatable parallaxWeight`：命中详情页立即 `snapTo(0f)`（Overlay 第一帧就是纯海报），清空后不立即恢复。
+- **返回后绝不播放定时恢复动画**。实测：画面静止 3 帧后定时恢复才启动，放大 + 倾斜 + 流光一起出现——这就是用户看到的那一「抖」。正确做法是只置 `waitingForMotion` 并记录基线角度，等用户真的倾斜（`|Δroll| + |Δpitch| > 0.05`）才 260ms 补上权重。
+- 所有 3D 量（rotation / translation / 1.04 scale / 评分角标位移 / 流光位置与 alpha）统一乘 `w = parallaxWeight`。
+
+### 5.3 负面清单（每条都回归过）
+1. **不要用 `sharedTransitionScope.isTransitionActive` 开关 3D**——它是整个布局级别的全局状态，会让**全屏所有卡片**同帧跳变。
+2. **不要靠挪 3D 的层级治抖动**（内层/外层都试过，都抖）。
+3. **不要给返回加定时恢复动画**。
+4. 3D `graphicsLayer` 仍在 `sharedBounds` 内层、与 `clip` 一起被提升进 Overlay——保证 Overlay 与卡片本体是同一份绘制。
+5. `cameraDistance` 是绝对像素值，与 `ScaleToBounds` 的 bounds 缩放复合后透视强度非线性变化，是让这一帧更显眼的原因之一，不要单独去调它。
+
+---
+
+## 六、海报明暗自适应字色（`PosterTone.kt`）
+
+问题：首屏片名/元信息直接压在海报上（不允许任何暗底），浅色海报 + 白字必然糊。
+
+实现：
+1. Coil 以 `72×108` + `allowHardware(false)` 再解一次同一 URL（走磁盘缓存，约百毫秒）。
+2. 逐像素算 sRGB 线性化的**相对亮度**。
+3. 只在**文字实际覆盖的条带**统计：`[heroFraction - 0.22, heroFraction]`，横向留白 10%。海报 `Crop` 只裁左右，所以图片纵向比例 == 屏幕纵向比例，可直接用屏幕坐标当图片坐标。
+4. 取 20/80 分位，用 **WCAG 对比度**判定：白字 vs 条带最亮处、近黑字 vs 条带最暗处。谁先满足 3:1 用谁；都不满足（花海报）取对比度更高的一侧。
+5. 顶部 16% 条带同样采样 → `prefersDarkSystemBar`，让状态栏图标在浅色海报上起手就深色。
+6. 结果按 `url#条带位置` 缓存在 64 条 LRU，重进详情页不会先白后黑闪一下。
+7. 日志：`MB-TONE: url=... Tone(darkText=..., darkBar=..., textBand=a..b, top=c)`。
+
+**坑**：`remember { derivedStateOf { posterTone.xxx } }` 会一直捕获首次组合的 `posterTone`（那时 `analyzed=false`），必须写 `remember(posterTone)`，否则浅色海报永远不触发。
+
+已知极限：条带里同时有亮区和深色人影的海报，深字压上去个别字会被吃掉。要彻底解决只能加极淡文字阴影或暗底——**用户明确禁止暗底/渐变**，所以保持现状，别自作主张加。
+
+---
+
+## 七、全局状态与传感器
+
+### 7.1 主题状态
+`ThemeManager.appThemeStateFlow` 是 `stateIn(Eagerly)` 的 **StateFlow**。所有订阅点一律 `collectAsState()`。
+
+**不要写 `collectAsState(initial = AppThemeState())`**：默认值里 `parallaxEnabled = true`，会让设置页首帧渲染「开」再动画到「关」（用户描述为「我没碰它，开关自己动了一下」）。
+
+### 7.2 数据源选择
+`TvBoxRepository` 持久化 `KEY_SELECTED_SITE_KEY`，`applySingleConfig` 保留已选站点，`cacheInitialized` 用 `AtomicBoolean` 保证幂等。历史 bug：返回首页/重启后回落到默认「暴风影视」。
+
+### 7.3 视差传感器
+监听器**应用级常驻**（`ParallaxRuntime` 引用计数），不要随页面组合 `onDispose` 注销——首页被 NavHost 移出后重新注册会让 `smoothX/Y` 从旧值收敛，表现为「返回后全屏卡片一起缓缓转一下」。只在用户主动关闭 3D 开关时注销。重新注册首帧直接锚定当前姿态，输出加短低通抹平单帧不连续。
+
+### 7.4 两个易被「顺手优化」掉的功能
+- **下拉刷新必须内容跟手**：`StandardPullToRefreshBox` 是自研 `nestedScroll` + `graphicsLayer { translationY }`。M3 官方 `PullToRefreshBox` 只弹指示器、内容不动。
+- **3D 陀螺仪**：历史上被转场重构删过两次。转场出问题应调幅度，不要整段删除。
+
+---
+
+## 八、数据链路
+
+### 8.1 订阅与解析
+`TvBoxParser` 解析 TVBox JSON（`sites` / `lives` / `parses`）与 M3U；`TvBoxRepository` 暴露 `realVodList` / `categoryVodList` / `selectedDetail` / `epgPrograms` 等 StateFlow。
+
+### 8.2 EPG
+- 支持 XMLTV（gzip、3 种时间格式、id/display-name 双索引）与 TVBox 模板式 JSON（`{name}` / `{date}` 替换、`HH:mm` 补齐绝对时间、跨零点）。
+- 多模板**依次回退 + 同域优先 + 成功模板记忆**；数据层预取首屏 12 个频道，不依赖页面组合时机。
+- 匹配不到就返回 null，UI 整行不显示，**绝不回填假数据**。
+- 日志：`MB-EPG`。
+
+### 8.3 图片 CDN 兼容（`ImageUrlCompat.kt`）
+`p.bfvp26.com` 等采集站 CDN：https 端口 SSL 握手直接失败、且会间歇返回 200 + `text/html` 拦截页。
+- `String.toLoadableImageUrl()`：https 统一降级 http（Manifest 已开 `usesCleartextTraffic`）。
+- `rememberRetryableImageRequest()`：`onError` 换新 key 重试，最多 4 次；缓存键与 URL 保持一致，首页成功加载后详情页可直接命中内存缓存。
+- 日志：`MB-IMG: OK/FAIL url attempt=n`。
+
+> 若海报「不显示」，先查这里，**不要因为黑屏就把详情页 Hero 搬回滚动流**（那会让海报跟手移动）。
+
+---
+
+## 九、构建、部署与调试
+
+```bash
+# 编译（JDK 17）
+export JAVA_HOME=/Users/damon/.tools/jdk-17.0.21+9/Contents/Home
+cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
+
+# 装机 + 冷启
+/Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 install -r \
+  /Users/damon/Documents/MobileBox/app/build/outputs/apk/debug/app-debug.apk
+/Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 shell am force-stop com.damon.mobilebox
+/Users/damon/platform-tools/adb -s 3B1F67EA9BBUHK76 shell am start \
+  -n com.damon.mobilebox/.ui.main.MainActivity
+```
+
+### 日志埋点
+
+| Tag | 用途 |
+| :--- | :--- |
+| `MB-TONE` | 海报明暗采样结果（深/浅字判定） |
+| `MB-IMG` | 图片加载成功/失败与重试次数 |
+| `MB-EPG` | EPG 模板命中、频道命中情况 |
+| `MB-DETAIL` | 详情页当前海报 URL |
+
+### 视觉问题排查方法（成本远低于反复改代码试错）
+`screenrecord` 录屏 → `ffmpeg` 30fps 抽帧 → 分区逐帧差分（`numpy` 均值差）定位到具体帧 → 裁剪放大拼图看变化形态。
+本项目「返回抖动」就是靠这个把范围锁到 f0386–f0390 的孤立峰值（其余区域≈0），一次定位成功。
+
+---
+
+## 十、协作约定（当前维护者的硬性要求）
+
+1. **改完只做 `assembleDebug` + `adb install -r`，然后立即交付**。编译是构建必需，保留。
+2. **部署后不要自测**：不截图、不录屏、不切页自检、不主动找问题。**测试由用户发起**——只有用户说「你自己测试/帮我测试」或用文字描述不清时，才允许操作设备。（设备常被用户同时使用，盲发 tap/swipe 会误触返回键、滑出多任务。）
+3. **Git 门禁**：只有用户明确说「验证通过 / 提交」，才 commit、push、勾 ROADMAP、写 CHANGELOG。
+4. **`/docs/` 与 `/CHANGELOG.md` 是私密内部文档**（`.gitignore` 第 23–24 行），只在本地维护，**绝不 `git add -f` 强推**。提交时用 `git add` 明确列出代码文件，不要 `git add .`。
+5. 用户偏好：不喜欢「多余装饰层」。任何背景、渐变、暗底、悬浮按钮都要先问清是否存在，不要叠加补丁。
+
+---
+
+## 十一、已知问题与下一步
+
+**已知问题**
+1. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏和返回按钮下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让，或给顶栏加一条与 `chromeAlpha` 同步的极淡渐变（注意别切出水平硬边）。
+2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
+3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
+
+**下一步（按 ROADMAP）**
+- Step 2.3 挖孔屏/手势条沉浸式避让
+- Step 3.x 播放器双核解码、全手势、弹幕/PiP、画质增强

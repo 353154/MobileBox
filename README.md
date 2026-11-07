@@ -11,8 +11,10 @@
 ## ✨ Features
 
 - **Modern Responsive UI**: Built with Jetpack Compose & Material 3, supporting dynamic palettes, hardware-accelerated aurora glow backgrounds, and instant theme color switching.
-- **Single-Handed Mobile Interaction**: Seamless 4-tab bottom navigation, anti-misfire double-tier category filters, and physical displacement pull-to-refresh with spring rebound.
+- **Single-Handed Mobile Interaction**: Seamless 5-tab bottom navigation, anti-misfire double-tier category filters, and physical displacement pull-to-refresh with spring rebound.
+- **Immersive Detail Page**: Shared-element poster flight (enter and exit from the same card), fixed Layer-A hero with a Layer-B content sheet that scrolls over it, full-screen cross-fade veil driven by scroll, staggered entrance for each content group, and automatic light/dark text color picked from the poster's own luminance.
 - **Standard 2:3 Golden Ratio Posters**: Unified vertical poster layout integrated with hardware gyroscope-driven 3D parallax tilt, depth translation, and dynamic specular sheen reflections.
+- **Live TV with EPG**: Muted pre-buffered preview with real-time blur, rotating Bing wallpapers while loading, and current/next programme info (hidden entirely when the source has no EPG).
 - **Direct-Play Multi-Source Engine**: Fat-client direct sniffing architecture with dynamic multi-source subscription switching and pure-text rule parsing.
 - **Modern Build & Dependency Injection**: Pure Kotlin DSL, Gradle Version Catalog (`libs.versions.toml`), and modular Hilt DI architecture.
 
