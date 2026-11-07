@@ -1,9 +1,19 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
+
+// 分发用的默认订阅源不写进代码（避免把源地址提交到公开仓库），
+// 从 local.properties 读取注入 BuildConfig。未配置时为空 = 保持「无内置源」行为。
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val defaultSubUrl: String = localProps.getProperty("DEFAULT_SUB_URL", "").trim()
 
 android {
     namespace = "com.damon.mobilebox"
@@ -17,11 +27,17 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 首启若用户没有配置过订阅，就用它自动订阅一次（为空则保持空白引导）
+        buildConfigField("String", "DEFAULT_SUB_URL", "\"$defaultSubUrl\"")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 用 debug 密钥签名：产物可直接安装到别人的手机上做测试分发。
+            // 正式上架前必须换成自己的 keystore（见 HANDOVER 第九章）。
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -38,6 +54,7 @@ android {
     buildFeatures {
         viewBinding = true
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get()
