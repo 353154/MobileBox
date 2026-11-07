@@ -7,6 +7,7 @@ import android.util.Rational
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.damon.mobilebox.data.watch.PlaybackSettings
 import java.lang.ref.WeakReference
 
 /**
@@ -73,6 +74,11 @@ object PipController {
      * @return 是否成功进入
      */
     fun tryEnterPip(): Boolean {
+        // 设置页的「画中画」开关：关掉后按 Home 就是普通退后台，不缩小窗口。
+        if (!PlaybackSettings.pipEnabled) {
+            android.util.Log.d("MB-PIP", "skip: 画中画开关已关闭")
+            return false
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             android.util.Log.d("MB-PIP", "skip: API < 26")
             return false

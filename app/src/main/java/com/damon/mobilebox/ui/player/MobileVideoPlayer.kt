@@ -58,6 +58,7 @@ import com.damon.mobilebox.ui.components.GlassControlButton
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -69,6 +70,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.damon.mobilebox.data.watch.PlaybackSettings
 import com.damon.mobilebox.data.tvbox.LiveChannel
 import com.damon.mobilebox.data.tvbox.LiveChannelGroup
 import com.damon.mobilebox.data.tvbox.TvBoxParser
@@ -77,6 +79,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+/** 续播 seek 的一次性门闩：普通类，避免为一次 seek 触发整页重组。 */
+private class ResumeSeekState {
+    var consumed: Boolean = false
+    var pendingMs: Long = 0L
+}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -130,7 +138,18 @@ fun MobileVideoPlayer(
     /** 所有播放源都失败后的终态文案：只显示「图标 + 文案」，无卡片、无遮罩、无按钮。 */
     fatalError: String? = null,
     /** 手动重试同一个源时递增：streamUrl 没变也要强制重新 prepare。 */
-    reloadToken: Int = 0
+    reloadToken: Int = 0,
+    /**
+     * 播放进度上报（位置 / 总时长，毫秒）。跟随轮询节奏触发，拖动进度条或手势 seek 后
+     * 下一次轮询就会拿到新位置。观影历史靠它记住「看到了哪里」，而不是只记墙上时间。
+     * 调用方应只把值写进普通对象，不要在这里写磁盘或触发重组。
+     */
+    onProgressChanged: ((positionMs: Long, durationMs: Long) -> Unit)? = null,
+    /**
+     * 续播起点（毫秒）：>0 时首帧就绪后 seek 到该位置。
+     * 只对本次播放器实例的第一次起播生效，自动换源 / 手动重试 / 换集都不会再回跳。
+     */
+    initialPositionMs: Long = 0L
 ) {
     val context = LocalContext.current
     val activity = remember(context) { findActivity(context) }
@@ -162,6 +181,10 @@ fun MobileVideoPlayer(
     val firstFrameCallback by rememberUpdatedState(onFirstFrameRendered)
     val sourceFailedCallback by rememberUpdatedState(onSourceFailed)
     val fatalErrorState by rememberUpdatedState(fatalError)
+    val progressCallback by rememberUpdatedState(onProgressChanged)
+    val seekStartMs by rememberUpdatedState(initialPositionMs)
+    // 普通对象而不是 State：续播只消费一次，不需要触发重组。
+    val resumeSeek = remember { ResumeSeekState() }
 
     var isPlaying by remember { mutableStateOf(true) }
     var isLoading by remember { mutableStateOf(true) }
@@ -324,6 +347,13 @@ fun MobileVideoPlayer(
         exoPlayer.setMediaItem(mediaItemBuilder.build())
         exoPlayer.prepare()
         exoPlayer.play()
+        // 续播位置只在本次播放器实例第一次起播时消费一次。
+        // 不在这里直接 seekTo：prepare 刚发起时 timeline 还没就绪，seek 可能被丢掉，
+        // 统一放到 STATE_READY 回调里执行，自动换源时 pendingMs 已是 0 不会回跳。
+        if (!resumeSeek.consumed && seekStartMs > 0L) {
+            resumeSeek.consumed = true
+            resumeSeek.pendingMs = seekStartMs
+        }
     }
 
     // 播放器状态事件监听
@@ -342,6 +372,12 @@ fun MobileVideoPlayer(
                 if (playbackState == Player.STATE_READY) {
                     duration = exoPlayer.duration.coerceAtLeast(0L)
                     playbackError = null
+                    // 续播：timeline 就绪后才知道总时长，此刻 seek 才会真正生效。
+                    if (resumeSeek.pendingMs > 0L) {
+                        val target = resumeSeek.pendingMs
+                        resumeSeek.pendingMs = 0L
+                        exoPlayer.seekTo(target)
+                    }
                     // 记住这条线路可用：下次进同一个频道优先用它，不再先等一次超时
                     if (isLive) LiveSourceMemory.remember(title, activeStreamUrl)
                 }
@@ -426,12 +462,53 @@ fun MobileVideoPlayer(
         Log.d("MB-PIP", "playbackError=${playbackError != null} fatal=${fatalError != null} -> playerActive=$playable")
     }
 
+    // ---- 后台播放开关 ----
+    // 关闭时：切后台（onStop）自动暂停，回前台（onStart）只在本来就在播的前提下恢复；
+    // 开启时：完全不干预 ExoPlayer，音频继续，并抬起网络唤醒锁防止锁屏后 HLS 断流。
+    // PiP 小窗由系统托管，不参与暂停判断（少数 ROM 进 PiP 也会走 onStop）。
+    val playPrefs by PlaybackSettings.prefsFlow.collectAsState()
+    val appInBackground = PlaybackSettings.appInBackground
+    var resumeOnReturn by remember { mutableStateOf(false) }
+
+    LaunchedEffect(playPrefs.backgroundPlayEnabled, appInBackground, PipController.isInPip) {
+        if (PipController.isInPip) {
+            if (resumeOnReturn) {
+                resumeOnReturn = false
+                exoPlayer.play()
+            }
+            return@LaunchedEffect
+        }
+        if (appInBackground) {
+            if (!playPrefs.backgroundPlayEnabled) {
+                resumeOnReturn = exoPlayer.isPlaying
+                exoPlayer.pause()
+            }
+        } else if (resumeOnReturn) {
+            resumeOnReturn = false
+            exoPlayer.play()
+        }
+    }
+
+    LaunchedEffect(playPrefs.backgroundPlayEnabled) {
+        try {
+            exoPlayer.setWakeMode(
+                if (playPrefs.backgroundPlayEnabled) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE
+            )
+        } catch (e: Exception) {
+            Log.w("MB-PLAY", "setWakeMode 失败: ${e.javaClass.simpleName}")
+        }
+    }
+
     // 周期性轮询播放进度
     LaunchedEffect(exoPlayer, isPlaying) {
         while (true) {
             currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
             duration = exoPlayer.duration.coerceAtLeast(0L)
             bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
+            // 只在真的拿到了可播放的时长后上报，避免起播阶段把「看到 00:00」写进历史。
+            if (hasFirstFrame && currentPosition > 0L && duration > 0L) {
+                progressCallback?.invoke(currentPosition, duration)
+            }
             delay(500)
         }
     }
@@ -938,7 +1015,12 @@ fun MobileVideoPlayer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        // 横屏沉浸式下没有状态栏 insets，顶栏原本贴着物理边缘，
+                        // 右上角的标签被切成一条蓝块。横屏统一往内收一段安全距离。
+                        .padding(
+                            horizontal = if (isLandscape) 32.dp else 16.dp,
+                            vertical = if (isLandscape) 12.dp else 8.dp
+                        ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
@@ -1005,17 +1087,22 @@ fun MobileVideoPlayer(
                         }
                     }
 
-                    Surface(
-                        color = if (isLive) Color(0xFFE50914) else MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = if (isLive) "LIVE 电视直播" else if (isLandscape) "全屏影院" else "硬解加速",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                    // 横屏点播不再挂这块蓝色「全屏影院」标签：沉浸式下它贴着右上角，
+                    // 被屏幕边缘/挖孔裁成一条没有文字的蓝色色块（用户 17:22 反馈）。
+                    // 直播的红色 LIVE 标识和竖屏的「硬解加速」保留。
+                    if (isLive || !isLandscape) {
+                        Surface(
+                            color = if (isLive) Color(0xFFE50914) else MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = if (isLive) "LIVE 电视直播" else "硬解加速",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
 
@@ -1082,7 +1169,14 @@ fun MobileVideoPlayer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 16.dp, vertical = if (isLandscape) 16.dp else 8.dp)
+                        // 横屏沉浸式下没有导航栏 insets，底栏原本直接压在屏幕物理边缘：
+                        // 时间戳被切掉下半截、右下角全屏按钮只剩一个角。
+                        // 固定安全区 + navigationBarsPadding 双保险，把整条底栏抬上来。
+                        .navigationBarsPadding()
+                        .padding(
+                            horizontal = if (isLandscape) 32.dp else 16.dp,
+                            vertical = if (isLandscape) 24.dp else 8.dp
+                        )
                 ) {
                     if (!isLive) {
                         Slider(

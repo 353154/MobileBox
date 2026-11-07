@@ -17,13 +17,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -75,11 +79,45 @@ private data class WatchListRow(
     val title: String,
     val posterUrl: String,
     val detailLine: String,
-    val metaLine: String
+    val metaLine: String,
+    /** 有值才在卡片底部画进度条；收藏 / 待看没有观看进度。 */
+    val progressRatio: Float? = null,
+    /** 进度条右侧文字，例如「看到 30:12 / 45:00」。 */
+    val progressText: String = "",
+    /** 只有观看历史行携带原始记录：点进去要自动起播到那一集并续播。 */
+    val resumeRecord: WatchRecord? = null
 )
 
 private fun formatStamp(millis: Long): String =
     if (millis <= 0L) "" else SimpleDateFormat("MM月dd日 HH:mm", Locale.getDefault()).format(Date(millis))
+
+/** 播放位置：不到 1 小时用 mm:ss，超过用 h:mm:ss。 */
+fun formatMediaTime(millis: Long): String {
+    val seconds = millis.coerceAtLeast(0L) / 1000L
+    val hours = seconds / 3600L
+    val minutes = (seconds % 3600L) / 60L
+    val secs = seconds % 60L
+    return if (hours > 0L) {
+        String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, secs)
+    } else {
+        String.format(Locale.getDefault(), "%02d:%02d", minutes, secs)
+    }
+}
+
+private fun progressTextOf(record: WatchRecord): String {
+    if (record.positionMs <= 0L) return ""
+    val position = formatMediaTime(record.positionMs)
+    return if (record.durationMs > 0L) {
+        "看到 $position / ${formatMediaTime(record.durationMs)}"
+    } else {
+        "看到 $position"
+    }
+}
+
+private fun progressRatioOf(record: WatchRecord): Float? =
+    if (record.positionMs > 0L && record.durationMs > 0L) {
+        (record.positionMs.toFloat() / record.durationMs.toFloat()).coerceIn(0f, 1f)
+    } else null
 
 private fun joinNonBlank(vararg parts: String): String =
     parts.filter { it.isNotBlank() }.joinToString(" · ")
@@ -90,7 +128,8 @@ private fun buildRows(
     favorites: List<FavoriteItem>,
     history: List<WatchRecord>
 ): List<WatchListRow> {
-    val watchedIds = history.map { it.videoId }.toSet()
+    // 直播频道不参与「待看 / 在看」的影片派生，只在历史里留下自己的记录。
+    val watchedIds = history.filterNot { it.isLive }.map { it.videoId }.toSet()
     return when (type) {
         WatchListType.HISTORY -> history.map { r ->
             WatchListRow(
@@ -98,12 +137,19 @@ private fun buildRows(
                 videoId = r.videoId,
                 title = r.title.ifBlank { "未知影片" },
                 posterUrl = r.posterUrl,
-                detailLine = joinNonBlank(r.episodeName, r.sourceName)
-                    .ifBlank { if (r.isSeries) "剧集" else "影片" },
+                detailLine = if (r.isLive) {
+                    joinNonBlank("电视直播", r.sourceName)
+                } else {
+                    joinNonBlank(r.episodeName, r.sourceName)
+                        .ifBlank { if (r.isSeries) "剧集" else "影片" }
+                },
                 metaLine = joinNonBlank(
                     formatStamp(r.startedAt),
-                    if (r.watchedMs > 0L) "观看 ${formatWatchDuration(r.watchedMs)}" else ""
-                ).ifBlank { "刚开播" }
+                    if (r.watchedMs > 0L) "累计 ${formatWatchDuration(r.watchedMs)}" else ""
+                ).ifBlank { "刚开播" },
+                progressRatio = progressRatioOf(r),
+                progressText = progressTextOf(r),
+                resumeRecord = r
             )
         }
 
@@ -129,7 +175,7 @@ private fun buildRows(
             )
         }
 
-        WatchListType.WATCHING -> history.groupBy { it.videoId }.values
+        WatchListType.WATCHING -> history.filterNot { it.isLive }.groupBy { it.videoId }.values
             .sortedByDescending { group -> group.maxOf { it.startedAt } }
             .map { records ->
                 val latest = records.maxByOrNull { it.startedAt } ?: records.first()
@@ -140,15 +186,45 @@ private fun buildRows(
                     posterUrl = latest.posterUrl,
                     detailLine = joinNonBlank(
                         "最近观看 ${latest.episodeName.ifBlank { "影片" }}",
-                        "共 ${records.size} 次"
+                        "共 ${records.distinctBy { it.episodeId }.size} 集"
                     ),
                     metaLine = joinNonBlank(
                         formatStamp(latest.startedAt),
                         "累计 ${formatWatchDuration(records.sumOf { it.watchedMs })}"
-                    )
+                    ),
+                    progressRatio = progressRatioOf(latest),
+                    progressText = progressTextOf(latest)
                 )
             }
     }
+}
+
+/** 四个列表的删除语义不同：派生列表必须落到它真正的存储表上。 */
+private fun removeRow(type: WatchListType, row: WatchListRow) {
+    when (type) {
+        WatchListType.HISTORY -> WatchStore.removeHistoryRecord(row.resumeRecord?.id ?: row.key)
+        // 待看 = 收藏里没播过的那些，删掉一条就是取消这一部的收藏
+        WatchListType.FAVORITES, WatchListType.PENDING -> WatchStore.removeFavorite(row.videoId)
+        // 在看 = 历史按影片聚合，删掉一部就是清掉它全部点播记录
+        WatchListType.WATCHING -> WatchStore.removeWatching(row.videoId)
+    }
+}
+
+private fun clearRows(type: WatchListType) {
+    when (type) {
+        WatchListType.HISTORY -> WatchStore.clearHistory()
+        WatchListType.FAVORITES -> WatchStore.clearFavorites()
+        WatchListType.PENDING -> WatchStore.clearPending()
+        WatchListType.WATCHING -> WatchStore.clearWatching()
+    }
+}
+
+/** 派生列表的清空会连带影响另一张表，确认文案必须说清楚。 */
+private fun clearConfirmMessage(type: WatchListType, count: Int): String = when (type) {
+    WatchListType.HISTORY -> "将清空全部 $count 条观看记录（含直播记录），不可恢复。"
+    WatchListType.FAVORITES -> "将清空全部 $count 部收藏，不可恢复。"
+    WatchListType.PENDING -> "将从收藏中移除 $count 部尚未观看的影片；已开播的收藏会保留。"
+    WatchListType.WATCHING -> "将清空 $count 部影片的全部观看记录；直播记录与收藏会保留。"
 }
 
 /**
@@ -177,7 +253,8 @@ private suspend fun resolveDetail(row: WatchListRow): VideoDetailData? {
 fun WatchListScreen(
     type: WatchListType,
     onBack: () -> Unit,
-    onOpenDetail: (VideoDetailData) -> Unit
+    /** 第二个参数是观看历史行的原始记录（续播用），其余三个列表传 null。 */
+    onOpenDetail: (VideoDetailData, WatchRecord?) -> Unit
 ) {
     val favorites by WatchStore.favorites.collectAsState()
     val history by WatchStore.history.collectAsState()
@@ -185,6 +262,25 @@ fun WatchListScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var resolvingKey by remember { mutableStateOf<String?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("清空${type.title}？") },
+            text = { Text(clearConfirmMessage(type, rows.size)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    clearRows(type)
+                    confirmClear = false
+                    Toast.makeText(context, "已清空${type.title}", Toast.LENGTH_SHORT).show()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("取消") }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -217,6 +313,15 @@ fun WatchListScreen(
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (rows.isNotEmpty()) {
+                TextButton(
+                    onClick = { confirmClear = true },
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    Text("清空", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
         Box(
             modifier = Modifier
@@ -259,8 +364,20 @@ fun WatchListScreen(
                     WatchListRowItem(
                         row = row,
                         resolving = resolvingKey == row.key,
+                        onRemove = {
+                            removeRow(type, row)
+                            val tip = when (type) {
+                                WatchListType.PENDING -> "已从收藏移除"
+                                WatchListType.WATCHING -> "已删除该片全部观看记录"
+                                else -> "已删除"
+                            }
+                            Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()
+                        },
                         onClick = {
-                            if (resolvingKey == null) {
+                            if (row.resumeRecord?.isLive == true) {
+                                // 直播没有影片详情 / 续播位置，别让它白跑一次 8s 全站搜索
+                                Toast.makeText(context, "直播频道请到「电视直播」页观看", Toast.LENGTH_SHORT).show()
+                            } else if (resolvingKey == null) {
                                 resolvingKey = row.key
                                 scope.launch {
                                     val detail = runCatching {
@@ -268,7 +385,7 @@ fun WatchListScreen(
                                     }.getOrNull()
                                     resolvingKey = null
                                     if (detail != null) {
-                                        onOpenDetail(detail)
+                                        onOpenDetail(detail, row.resumeRecord)
                                     } else {
                                         Toast.makeText(
                                             context,
@@ -290,14 +407,17 @@ fun WatchListScreen(
 private fun WatchListRowItem(
     row: WatchListRow,
     resolving: Boolean,
+    onRemove: () -> Unit,
     onClick: () -> Unit
 ) {
     val context = LocalContext.current
     Card(
         onClick = onClick,
+        // 高度自适应：带进度条的行比普通行多一行，写死 96dp 会把文字裁掉
+        // （系统字体放大时尤其明显）。海报改固定高，不再依赖父 Row 的高度。
         modifier = Modifier
             .fillMaxWidth()
-            .height(96.dp),
+            .wrapContentHeight(),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
@@ -305,8 +425,8 @@ private fun WatchListRowItem(
     ) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(10.dp),
+                .fillMaxWidth()
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (row.posterUrl.isNotBlank()) {
@@ -316,14 +436,14 @@ private fun WatchListRowItem(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .width(54.dp)
-                        .fillMaxHeight()
+                        .height(76.dp)
                         .clip(RoundedCornerShape(8.dp))
                 )
             } else {
                 Box(
                     modifier = Modifier
                         .width(54.dp)
-                        .fillMaxHeight()
+                        .height(76.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center
@@ -362,11 +482,51 @@ private fun WatchListRowItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                // 「看到了哪里」：进度条 + 具体时间戳，拖动到 30 分也能直接看到。
+                if (row.progressRatio != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(row.progressRatio)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
+                        }
+                        if (row.progressText.isNotBlank()) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = row.progressText,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
             }
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(2.dp))
             if (resolving) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
             } else {
+                // 删除按钮是内层可点控件：点击由它消费，不会连带触发整张卡片的进详情。
+                IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "删除",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
                     contentDescription = null,

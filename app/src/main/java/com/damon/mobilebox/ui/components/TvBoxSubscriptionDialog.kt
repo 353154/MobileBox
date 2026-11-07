@@ -25,6 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.tvbox.TvBoxSite
 import com.damon.mobilebox.data.tvbox.TvBoxWarehouse
@@ -50,32 +52,54 @@ fun TvBoxSubscriptionDialog(
 
     var inputUrl by remember(savedUrl) { mutableStateOf(savedUrl) }
 
-    AlertDialog(
+    // 直播专用站点不属于「可用影视站点」：即使旧缓存里还留着也不展示、不计数。
+    val visibleSites = remember(currentSites) { currentSites.filterNot { it.isLiveOnlySite } }
+
+    // 不用 AlertDialog：它的 text 槽没有高度上限，站点一多整个对话框会撑满屏幕，
+    // 列表末尾被裁、底部「完成」孤零零悬在一大片空白下面（用户 17:22 反馈）。
+    // 改成固定高度上限 + 中部滚动 + 标题/按钮常驻的三段式布局。
+    Dialog(
         onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.CloudDownload,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "TVBox 订阅与源配置",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        },
-        text = {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp)
+                .fillMaxHeight(0.88f),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudDownload,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "TVBox 订阅与源配置",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
                 // 1. 订阅输入区
                 item {
                     Text(
@@ -291,14 +315,14 @@ fun TvBoxSubscriptionDialog(
                 // 5. 当前可用影视站点列表
                 item {
                     Text(
-                        text = "可用影视站点列表 (${currentSites.size} 个，点击切换)",
+                        text = "可用影视站点列表 (${visibleSites.size} 个，点击切换)",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
 
-                if (currentSites.isEmpty()) {
+                if (visibleSites.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
@@ -314,7 +338,7 @@ fun TvBoxSubscriptionDialog(
                         }
                     }
                 } else {
-                    items(currentSites) { site ->
+                    items(visibleSites) { site ->
                         val isSelected = site.key == selectedSite?.key
                         Row(
                             modifier = Modifier
@@ -407,13 +431,24 @@ fun TvBoxSubscriptionDialog(
                         }
                     }
                 }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(
+                            "完成",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("完成", color = MaterialTheme.colorScheme.primary)
-            }
-        },
-        containerColor = MaterialTheme.colorScheme.surface
-    )
+        }
+    }
 }

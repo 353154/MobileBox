@@ -49,6 +49,23 @@ data class TvBoxSite(
             4 -> "AppYs原生"
             else -> "标准源"
         }
+
+    /**
+     * 只提供电视直播频道、没有点播采集接口的配置项。
+     *
+     * 不少订阅会把「专属直播频道」这类 CMS-XML 项也塞进 sites 数组，
+     * 但它没有分类/搜索/详情接口：混进「可用影视站点」后用户一切过去首页就空，
+     * 跨站聚合还会白白拿它发一次 6s 超时的点播请求。
+     * 直播频道由 TvBoxConfig.lives 独立解析，剔除这一项不会影响直播页。
+     */
+    val isLiveOnlySite: Boolean
+        get() {
+            val n = name.lowercase()
+            if (n.contains("直播") || n.contains("电视频道") || n.contains("电视台")) return true
+            val a = api.lowercase()
+            return a.endsWith(".m3u") || a.endsWith(".m3u8") ||
+                a.contains("/live.txt") || a.contains("live.m3u")
+        }
 }
 
 data class TvBoxLive(

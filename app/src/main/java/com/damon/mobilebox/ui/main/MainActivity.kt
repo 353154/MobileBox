@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.remember
 import com.damon.mobilebox.core.device.DeviceProfileProvider
+import com.damon.mobilebox.data.watch.PlaybackSettings
 import com.damon.mobilebox.ui.navigation.AppNavigation
 import com.damon.mobilebox.ui.player.PipController
 import com.damon.mobilebox.ui.theme.ThemeManager
@@ -40,9 +41,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        PlaybackSettings.onAppForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        PlaybackSettings.onAppBackground()
+    }
+
     /**
-     * 用户按 Home 离开时：如果播放器正开着就进画中画继续播。
-     * 没在播放时什么都不做（正常退到后台），由 PipController 内部判断。
+     * 用户按 Home 离开时：如果播放器正开着、且画中画开关打开就进小窗继续播。
+     * 开关关掉时正常退到后台，是否继续出声由「后台播放」开关决定（播放器里处理）。
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()

@@ -1,6 +1,7 @@
 package com.damon.mobilebox.ui.detail
 
 import android.app.Activity
+import android.content.res.Configuration
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
@@ -101,6 +102,10 @@ val LocalBTextColors = compositionLocalOf { BTextColors(BTextPrimary, BTextSecon
 private class PlaySession {
     var recordId: String? = null
     var startRealtime: Long = 0L
+    // 播放器每 500ms 上报的最新位置 / 总时长，只在 dispose 时一次性落盘。
+    // 放普通类而不是 State：每半秒改一次 State 会把整页拖进无意义重组。
+    var positionMs: Long = 0L
+    var durationMs: Long = 0L
 }
 
 /**
@@ -132,11 +137,16 @@ fun MovieDetailScreen(
     initialTitle: String = "",
     posterUrl: String = "",
     videoData: VideoDetailData? = null,
+    /** 从观看历史进入时的续播位置（毫秒），0 表示正常浏览态。 */
+    resumePositionMs: Long = 0L,
+    /** 从观看历史进入时要自动起播的集数；>0 才会触发自动播放。 */
+    resumeEpisodeId: Int = 0,
     onPlayEpisode: (VideoEpisode) -> Unit = {},
     onShowToast: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val density = LocalDensity.current
     val heroHeight = (configuration.screenHeightDp.dp * 0.82f).coerceIn(420.dp, 640.dp)
     val heroHeightPx = with(density) { heroHeight.toPx() }
@@ -225,6 +235,9 @@ fun MovieDetailScreen(
     val playbackScope = rememberCoroutineScope()
     // 观看会话：首帧落地才开，换集 / 换源 / 退出播放 / 页面销毁时结算时长。
     val playSession = remember { PlaySession() }
+    // 续播位置只在「历史列表自动起播」时用一次；用户手动点任何播放入口都清零，
+    // 否则换集后播放器会带着上一次的 seek 位置重新组合。
+    var pendingResumeMs by remember { mutableStateOf(resumePositionMs) }
 
     // ---- 播放源自动接力 ----
     // attemptAnchor = 本轮起始线路下标；attemptCount = 本轮已尝试的条数（含当前）。
@@ -427,7 +440,8 @@ fun MovieDetailScreen(
     }
 
     /** 进入原地播放：先归位视口，再收缩容器；已在播放则只换源 */
-    fun startPlayback(ep: VideoEpisode) {
+    fun startPlayback(ep: VideoEpisode, keepResume: Boolean = false) {
+        if (!keepResume) pendingResumeMs = 0L
         selectedEpisodeId = ep.episodeId
         // 任何手动播放动作（立即播放 / 选集 / 播放源 chip）都开启新一轮尝试。
         // 用户手动指定源后，之前失败的计数不该继续累计。
@@ -488,6 +502,36 @@ fun MovieDetailScreen(
         }
     }
 
+    // 从观看历史进入：转场收尾后自动起播到记录的那一集，并把上次位置交给播放器。
+    // LaunchedEffect(Unit) 只跑一次 —— 跨站线路异步追加导致 mergedData 变化不会二次起播；
+    // delay 之后再读 mergedData 会拿到最新值，不必把 routes.size 放进 key。
+    LaunchedEffect(Unit) {
+        if (resumeEpisodeId <= 0) return@LaunchedEffect
+        delay(360) // 共享元素转场 280ms，等它收尾再动容器，避免两段动画抢帧
+        val routes = mergedData.routes
+        if (routes.isEmpty()) return@LaunchedEffect
+        var matchIndex = -1
+        var matchEpisode: VideoEpisode? = null
+        routes.forEachIndexed { index, route ->
+            val ep = route.episodes.firstOrNull { it.episodeId == resumeEpisodeId }
+            if (ep != null && matchEpisode == null) {
+                matchIndex = index
+                matchEpisode = ep
+            }
+        }
+        val target = matchEpisode
+        if (target != null && matchIndex >= 0) {
+            selectedRouteIndex = matchIndex
+            selectedEpisodeId = target.episodeId
+            startPlayback(target, keepResume = true)
+        } else {
+            // 线路里已经没有这一集（换源 / 站点改了集数）：退回第一集从头播，
+            // 绝不把 A 集的位置套到 B 集上。
+            pendingResumeMs = 0L
+            routes.firstOrNull()?.episodes?.firstOrNull()?.let { startPlayback(it) }
+        }
+    }
+
     // 观看会话结算：key 用 playTarget。换集 / 换源（ep 对象变化）与退出播放（变 null）
     // 都会先结算上一段；页面被 NavHost 移出时同样会 dispose，不会漏记。
     // 计时用 elapsedRealtime，不受用户改系统时间影响。
@@ -496,10 +540,17 @@ fun MovieDetailScreen(
             val id = playSession.recordId
             val start = playSession.startRealtime
             if (id != null && start > 0L) {
-                WatchStore.finishSession(id, SystemClock.elapsedRealtime() - start)
+                WatchStore.finishSession(
+                    id,
+                    SystemClock.elapsedRealtime() - start,
+                    playSession.positionMs,
+                    playSession.durationMs
+                )
             }
             playSession.recordId = null
             playSession.startRealtime = 0L
+            playSession.positionMs = 0L
+            playSession.durationMs = 0L
         }
     }
 
@@ -573,14 +624,19 @@ fun MovieDetailScreen(
                             .layout { measurable, constraints ->
                                 val p = morph.value.coerceIn(0f, 1f)
                                 val pip = PipController.isInPip
+                                // 横屏全屏播放：详情页原地播放不能再按竖屏 16:9 画框收缩，
+                                // 否则 playingHeightPx 是按横屏屏宽算出来的、比横屏屏高还大，
+                                // 播放层上下都会被裁（顶栏只剩半截、底部时间戳贴边）。
+                                // 横屏一律铺满整个窗口，只留视频画面。
+                                val fullscreenPlayback = isLandscape && playTarget != null
                                 // 常态高度必须取父约束，不能取 configuration.screenHeightDp：
                                 // 后者是「可用内容高度」，比窗口矮掉状态栏/导航栏那一段，
                                 // 用它会让 A 层底部短一截、露出白条（2026-11-07 14:24 用户截图）。
                                 // 取 maxHeight 才与原来的 fillMaxSize 完全等价，首屏零变化。
                                 val fullH = constraints.maxHeight.toFloat()
                                 // 画中画：整窗缩小，视频必须铺满小窗，否则下方会露出信息层
-                                val top = if (pip) 0f else statusBarPx * p
-                                val h = if (pip) fullH else fullH + (playingHeightPx - fullH) * p
+                                val top = if (pip || fullscreenPlayback) 0f else statusBarPx * p
+                                val h = if (pip || fullscreenPlayback) fullH else fullH + (playingHeightPx - fullH) * p
                                 val placeable = measurable.measure(
                                     Constraints.fixed(
                                         constraints.maxWidth,
@@ -646,7 +702,15 @@ fun MovieDetailScreen(
                                 onSourceFailed = { onSourceFailed() },
                                 loadingHint = loadingSourceHint,
                                 fatalError = fatalPlaybackError,
-                                reloadToken = reloadToken
+                                reloadToken = reloadToken,
+                                // 只写内存，不重组、不落盘；拖动进度条后的新位置会在
+                                // 下一次 500ms 轮询里覆盖这里，退出时以最后值为准。
+                                onProgressChanged = { position, total ->
+                                    playSession.positionMs = position
+                                    playSession.durationMs = total
+                                },
+                                // 历史列表续播：只有自动起播那一次非 0，播放器内部只消费一次。
+                                initialPositionMs = pendingResumeMs
                             )
                         }
 
@@ -692,8 +756,12 @@ fun MovieDetailScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        // 画中画：整窗缩小时只留画面。B 层绘制在 A 层之上，不透明的话会盖住小窗
-                        .graphicsLayer { alpha = if (PipController.isInPip) 0f else 1f }
+                        // 画中画 / 横屏全屏：整窗缩小时只留画面。B 层绘制在 A 层之上，
+                        // 不透明的话会盖住小窗；横屏时它还会把片名、蓝色按钮等详情内容
+                        // 挤到屏幕边缘露出半截。这两种情况都直接隐藏。
+                        .graphicsLayer {
+                            alpha = if (PipController.isInPip || (isLandscape && playTarget != null)) 0f else 1f
+                        }
                         // 视口下移到状态栏下沿：内容滚到顶时止步于此，不会钻进状态栏/挖孔
                         .padding(top = statusBarTop)
                         .verticalScroll(scrollState)

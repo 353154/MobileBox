@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.Crossfade
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.damon.mobilebox.data.watch.PlaybackSettings
 import com.damon.mobilebox.ui.theme.ThemeManager
 import com.damon.mobilebox.ui.theme.ThemePreference
 import com.damon.mobilebox.ui.theme.ThemeColorMode
@@ -94,10 +96,17 @@ import com.damon.mobilebox.ui.components.TvBoxSubscriptionDialog
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.tvbox.EpgPrograms
 import com.damon.mobilebox.data.tvbox.TvBoxSite
+import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/** 直播的一次观看会话：首帧落地才开，换台 / 关闭播放时结算墙上时长。 */
+private class LiveWatchSession {
+    var recordId: String? = null
+    var startRealtime: Long = 0L
+}
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
@@ -516,6 +525,11 @@ fun LiveScreenContent(
     // 是否开启播放：唯一入口是中间的大播放按钮，选台不会触发播放
     var isPlayerActive by remember { mutableStateOf(false) }
 
+    // 直播观看会话：频道名变化即换台，重建会话对象；关闭播放时由播放器所在 if 块移除来结算。
+    // 直播没有「集数 / 播放进度」，只记墙上时长，供统计卡片里的直播时长使用。
+    val activeChannelName = selectedChannel?.name.orEmpty()
+    val liveSession = remember(activeChannelName) { LiveWatchSession() }
+
     val epgPrograms by TvBoxRepository.epgPrograms.collectAsState()
     // 模板就绪是异步的：作为查询触发条件之一，避免 initFromCache 完成前组合导致的漏查
     val epgTemplate by TvBoxRepository.epgTemplate.collectAsState()
@@ -639,6 +653,24 @@ fun LiveScreenContent(
 
                     // 上层：只有点击大播放按钮才挂载正式播放器
                     if (isPlayerActive && selectedChannel != null) {
+                        // 换台（key 变化）或关闭播放（整个 if 块被移除）都会走到 onDispose，
+                        // 把这一段观看时长补进历史；首帧没出来就不会有 recordId，不记失败会话。
+                        DisposableEffect(activeChannelName) {
+                            onDispose {
+                                val id = liveSession.recordId
+                                val start = liveSession.startRealtime
+                                if (id != null && start > 0L) {
+                                    WatchStore.finishSession(
+                                        id,
+                                        SystemClock.elapsedRealtime() - start,
+                                        0L,
+                                        0L
+                                    )
+                                }
+                                liveSession.recordId = null
+                                liveSession.startRealtime = 0L
+                            }
+                        }
                         MobileVideoPlayer(
                             streamUrl = selectedChannel!!.url,
                             title = selectedChannel!!.name,
@@ -650,6 +682,21 @@ fun LiveScreenContent(
                             currentChannel = selectedChannel,
                             onSelectChannel = { channel ->
                                 selectedChannel = channel
+                            },
+                            onFirstFrameRendered = {
+                                if (liveSession.recordId == null) {
+                                    liveSession.recordId = WatchStore.recordPlayback(
+                                        videoId = "live_$activeChannelName",
+                                        title = activeChannelName.ifBlank { "电视直播" },
+                                        posterUrl = selectedChannel?.logo.orEmpty(),
+                                        episodeId = 0,
+                                        episodeName = "直播",
+                                        sourceName = "电视直播",
+                                        isSeries = false,
+                                        isLive = true
+                                    )
+                                    liveSession.startRealtime = SystemClock.elapsedRealtime()
+                                }
                             },
                             onBackClick = {
                                 if (isLandscape) {
@@ -918,6 +965,8 @@ fun ModernSettingsScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val themeState by themeManager.appThemeStateFlow.collectAsState()
+    // 播放行为开关：共享 StateFlow，切 Tab 不会先渲染一帧默认值
+    val playPrefs by PlaybackSettings.prefsFlow.collectAsState()
     val currentTheme = themeState.themePreference
     val selectedWarehouse by TvBoxRepository.selectedWarehouse.collectAsState()
     val savedSubscriptionUrl by TvBoxRepository.savedSubscriptionUrl.collectAsState()
@@ -1160,6 +1209,76 @@ fun ModernSettingsScreen(
                         CupertinoSwitch(
                             checked = isMpvKernel,
                             onCheckedChange = { isMpvKernel = it }
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
+
+                    // 画中画：关掉后按 Home 不再缩成小窗，是否继续出声交给「后台播放」开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PictureInPictureAlt,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "画中画小窗",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (playPrefs.pipEnabled) "已开启 · 按 Home 自动缩成悬浮小窗继续播放"
+                                else "已关闭 · 按 Home 直接退到后台",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        CupertinoSwitch(
+                            checked = playPrefs.pipEnabled,
+                            onCheckedChange = { PlaybackSettings.setPipEnabled(it) }
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
+
+                    // 后台播放：关 = 切后台暂停、回前台恢复；开 = 不干预，锁屏继续出声
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Headphones,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "后台播放",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (playPrefs.backgroundPlayEnabled) "已开启 · 切后台或锁屏继续播放声音"
+                                else "已关闭 · 切后台自动暂停，返回后继续",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        CupertinoSwitch(
+                            checked = playPrefs.backgroundPlayEnabled,
+                            onCheckedChange = { PlaybackSettings.setBackgroundPlayEnabled(it) }
                         )
                     }
                 }

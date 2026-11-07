@@ -85,11 +85,15 @@ fun AppNavigation(themeManager: ThemeManager) {
                 )
             }
             composable(
-                route = "detail/{movieId}?title={title}&poster={poster}",
+                route = "detail/{movieId}?title={title}&poster={poster}&resume={resume}&ep={ep}",
                 arguments = listOf(
                     navArgument("movieId") { type = NavType.StringType },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
-                    navArgument("poster") { type = NavType.StringType; defaultValue = "" }
+                    navArgument("poster") { type = NavType.StringType; defaultValue = "" },
+                    // 观看历史续播：resume = 上次播放位置(ms)，ep = 上次那一集。
+                    // 首页 / 搜索等普通入口不带这两个参数，走默认值 0 = 浏览态。
+                    navArgument("resume") { type = NavType.LongType; defaultValue = 0L },
+                    navArgument("ep") { type = NavType.IntType; defaultValue = 0 }
                 )
             ) { backStackEntry ->
                 val movieId = backStackEntry.arguments?.getString("movieId")?.trim().orEmpty()
@@ -103,6 +107,8 @@ fun AppNavigation(themeManager: ThemeManager) {
                     onDispose { SharedPosterTransition.activeKey.value = null }
                 }
 
+                val resumePositionMs = backStackEntry.arguments?.getLong("resume") ?: 0L
+                val resumeEpisodeId = backStackEntry.arguments?.getInt("ep") ?: 0
                 val rawTitle = backStackEntry.arguments?.getString("title").orEmpty()
                 val rawPoster = backStackEntry.arguments?.getString("poster").orEmpty()
                 val routeTitle = try { URLDecoder.decode(rawTitle, "UTF-8") } catch (_: Exception) { rawTitle }
@@ -118,6 +124,8 @@ fun AppNavigation(themeManager: ThemeManager) {
                     initialTitle = routeTitle.ifBlank { effectiveDetail?.title.orEmpty() },
                     posterUrl = routePoster.ifBlank { effectiveDetail?.posterUrl.orEmpty() },
                     videoData = effectiveDetail,
+                    resumePositionMs = resumePositionMs,
+                    resumeEpisodeId = resumeEpisodeId,
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
                     onBack = { navController.popBackStack() }
@@ -133,13 +141,20 @@ fun AppNavigation(themeManager: ThemeManager) {
                 WatchListScreen(
                     type = listType,
                     onBack = { navController.popBackStack() },
-                    onOpenDetail = { detail ->
+                    onOpenDetail = { detail, resumeRecord ->
                         // 列表里只存最小展示字段，进详情前先把真实线路挂到 selectedDetail，
                         // 详情页的 finalData 才会拿到可播放的 routes。
                         TvBoxRepository.selectedDetail = detail
                         val encodedTitle = try { URLEncoder.encode(detail.title, "UTF-8") } catch (_: Exception) { "" }
                         val encodedPoster = try { URLEncoder.encode(detail.posterUrl, "UTF-8") } catch (_: Exception) { "" }
-                        navController.navigate("detail/${detail.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
+                        // 只有观看历史传 record：自动起播到那一集，并从上次位置续播。
+                        // 其余三个列表 record = null，进详情页保持浏览态。
+                        val resumeMs = resumeRecord?.positionMs?.coerceAtLeast(0L) ?: 0L
+                        val episodeId = resumeRecord?.episodeId ?: 0
+                        navController.navigate(
+                            "detail/${detail.id.trim()}?title=$encodedTitle&poster=$encodedPoster" +
+                                "&resume=$resumeMs&ep=$episodeId"
+                        )
                     }
                 )
             }

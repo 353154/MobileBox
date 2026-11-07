@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 后台播放时保持网络唤醒，锁屏后 HLS 分片才不会因 CPU 休眠断流 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- 硬件特性：移除了 TV leanback，声明手机电容触摸屏 -->
     <uses-feature

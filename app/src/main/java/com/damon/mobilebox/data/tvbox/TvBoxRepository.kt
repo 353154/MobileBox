@@ -252,7 +252,9 @@ object TvBoxRepository {
      * 将单仓配置应用至内存与持久化
      */
     private suspend fun applySingleConfig(context: Context, config: TvBoxConfig, sourceUrl: String): List<TvBoxSite> {
-        val rawSites = config.sites ?: emptyList()
+        // 只保留真正的点播采集站：订阅里「专属直播频道」这类项没有点播接口，
+        // 直播频道已经由 config.lives 单独解析，这里混进来只会污染站点列表与跨站搜索。
+        val rawSites = (config.sites ?: emptyList()).filterNot { it.isLiveOnlySite }
         // 智能优选排布：将通用 CMS 采集源置前，爬虫源居后，支持全量展示
         val sortedSites = rawSites.sortedBy { site ->
             if (site.type == 0 || site.type == 1 || site.api.contains("provide/vod") || site.api.contains("api.php")) 0 else 1
@@ -868,7 +870,10 @@ object TvBoxRepository {
             var chosenSite: TvBoxSite? = null
             if (!cachedSitesJson.isNullOrBlank()) {
                 val listType = object : TypeToken<List<TvBoxSite>>() {}.type
-                val sites: List<TvBoxSite>? = gson.fromJson(cachedSitesJson, listType)
+                @Suppress("UNCHECKED_CAST")
+                val cached = gson.fromJson<List<TvBoxSite>>(cachedSitesJson, listType) as? List<TvBoxSite>
+                // 老缓存里可能还留着直播专用站点，恢复时同样剔掉
+                val sites = cached?.filterNot { it.isLiveOnlySite }
                 if (!sites.isNullOrEmpty()) {
                     _currentSites.value = sites
                     chosenSite = sites.find { it.key == selectedKey } ?: sites.first()
