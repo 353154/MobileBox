@@ -105,7 +105,12 @@ fun formatMediaTime(millis: Long): String {
 }
 
 private fun progressTextOf(record: WatchRecord): String {
-    if (record.positionMs <= 0L) return ""
+    if (record.positionMs <= 0L) {
+        // 旧版记录只记了时长、没记 positionMs，物理上无从续播。
+        // 与其让用户点进去发现「从头发车、以为续播坏了」，不如在列表里说清楚：
+        // 本集从开头播，播完这一次就会补上进度，下次即可正常续播。
+        return if (record.watchedMs > 0L && !record.isLive) "无播放进度 · 从头播放" else ""
+    }
     val position = formatMediaTime(record.positionMs)
     return if (record.durationMs > 0L) {
         "看到 $position / ${formatMediaTime(record.durationMs)}"
@@ -502,6 +507,17 @@ private fun WatchListRowItem(
                             )
                         }
                     }
+                } else if (row.progressText.isNotBlank()) {
+                    // 没有进度比例但有说明（旧记录无 positionMs）：显示一行灰字，
+                    // 不再画空进度条 —— 空条会让人误以为「进度是 0」。
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = row.progressText,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
             Spacer(modifier = Modifier.width(2.dp))
