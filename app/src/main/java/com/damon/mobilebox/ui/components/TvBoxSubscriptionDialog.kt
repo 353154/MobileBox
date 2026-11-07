@@ -62,14 +62,11 @@ fun TvBoxSubscriptionDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
+        StandardDialogSurface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp)
-                .fillMaxHeight(0.88f),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp
+                .fillMaxHeight(0.88f)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(

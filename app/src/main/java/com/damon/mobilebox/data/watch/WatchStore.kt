@@ -302,4 +302,17 @@ object WatchStore {
     fun clearWatching() {
         editHistory { list -> list.removeAll { record -> !record.isLive } }
     }
+
+    // ------------------------------------------------------------------
+    // WebDAV 云端同步：合并结果一次性写回。
+    // 用 suspend 的 edit（而非 fire-and-forget）保证调用方拿到的是已落盘状态；
+    // 两个 key 在同一次 edit 里写，避免收藏与历史只落地一半。
+    // ------------------------------------------------------------------
+    suspend fun importBackup(favorites: List<FavoriteItem>, history: List<WatchRecord>) {
+        val ds = store ?: return
+        ds.edit { prefs ->
+            prefs[KEY_FAVORITES] = gson.toJson(favorites.take(FAVORITE_LIMIT))
+            prefs[KEY_HISTORY] = gson.toJson(normalizeHistory(history).take(HISTORY_LIMIT))
+        }
+    }
 }

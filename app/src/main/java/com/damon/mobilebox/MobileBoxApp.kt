@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import com.damon.mobilebox.data.watch.PlaybackSettings
 import com.damon.mobilebox.data.watch.WatchStore
+import com.damon.mobilebox.data.watch.WebDavConfig
 import dagger.hilt.android.HiltAndroidApp
 
 /**
@@ -23,6 +24,8 @@ class MobileBoxApp : Application() {
         WatchStore.init(this)
         // 画中画 / 后台播放开关：必须在任何页面组合、任何 onUserLeaveHint 之前起好
         PlaybackSettings.init(this)
+        // WebDAV 同步配置：设置页与网络层都要读，同样在页面组合前起好
+        WebDavConfig.init(this)
         Log.i(TAG, "MobileBoxApp 初始化成功，Hilt 依赖注入容器已就绪")
     }
 }

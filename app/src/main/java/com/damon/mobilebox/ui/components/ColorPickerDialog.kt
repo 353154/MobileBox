@@ -54,11 +54,17 @@ fun ColorPickerDialog(
     val currentColor = Color.hsv(hue, saturation, value)
     val hexString = String.format("#%06X", 0xFFFFFF and currentColor.toArgb())
 
-    AlertDialog(
+    StandardDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择主题色", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+        scrollable = false
+    ) {
+        Text(
+            "选择主题色",
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp
+        )
+        Column(modifier = Modifier.fillMaxWidth()) {
                 ThemeColorMode.entries.forEach { mode ->
                     Row(
                         modifier = Modifier
@@ -139,19 +145,15 @@ fun ColorPickerDialog(
                     )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(selectedMode, currentColor.toArgb()) }) {
-                Text("保存", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
+        Row(modifier = Modifier.align(Alignment.End)) {
             TextButton(onClick = onDismiss) {
                 Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        },
-        containerColor = MaterialTheme.colorScheme.surface
-    )
+            TextButton(onClick = { onSave(selectedMode, currentColor.toArgb()) }) {
+                Text("保存", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
 }
 
 // --- 新增：纯 Compose 手绘交互式色盘组件 ---

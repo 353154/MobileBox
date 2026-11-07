@@ -56,6 +56,7 @@ import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.watch.FavoriteItem
 import com.damon.mobilebox.data.watch.WatchRecord
 import com.damon.mobilebox.data.watch.WatchStore
+import com.damon.mobilebox.ui.components.StandardDialog
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.player.VideoDetailData
@@ -265,21 +266,25 @@ fun WatchListScreen(
     var confirmClear by remember { mutableStateOf(false) }
 
     if (confirmClear) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            title = { Text("清空${type.title}？") },
-            text = { Text(clearConfirmMessage(type, rows.size)) },
-            confirmButton = {
+        StandardDialog(onDismissRequest = { confirmClear = false }) {
+            Text(
+                "清空${type.title}？",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                clearConfirmMessage(type, rows.size),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(modifier = Modifier.align(Alignment.End)) {
+                TextButton(onClick = { confirmClear = false }) { Text("取消") }
                 TextButton(onClick = {
                     clearRows(type)
                     confirmClear = false
                     Toast.makeText(context, "已清空${type.title}", Toast.LENGTH_SHORT).show()
-                }) { Text("清空") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("取消") }
+                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
             }
-        )
+        }
     }
 
     Column(

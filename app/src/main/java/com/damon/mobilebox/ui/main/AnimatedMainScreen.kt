@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.damon.mobilebox.data.watch.PlaybackSettings
+import com.damon.mobilebox.data.watch.WebDavConfig
 import com.damon.mobilebox.ui.theme.ThemeManager
 import com.damon.mobilebox.ui.theme.ThemePreference
 import com.damon.mobilebox.ui.theme.ThemeColorMode
@@ -74,6 +75,8 @@ import com.damon.mobilebox.ui.components.NavGlyphIcon
 import com.damon.mobilebox.ui.components.ModernToastMessage
 import com.damon.mobilebox.ui.components.CupertinoSwitch
 import com.damon.mobilebox.ui.components.ColorPickerDialog
+import com.damon.mobilebox.ui.components.StandardDialog
+import com.damon.mobilebox.ui.components.WebDavSyncDialog
 import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
 import com.damon.mobilebox.ui.components.ModernBackgroundContainer
 import com.damon.mobilebox.ui.components.LocalParallaxAngles
@@ -965,12 +968,15 @@ fun ModernSettingsScreen(
     val themeState by themeManager.appThemeStateFlow.collectAsState()
     // 播放行为开关：共享 StateFlow，切 Tab 不会先渲染一帧默认值
     val playPrefs by PlaybackSettings.prefsFlow.collectAsState()
+    // WebDAV 配置：共享 StateFlow，切 Tab 不会先渲染一帧空配置
+    val webDavState by WebDavConfig.stateFlow.collectAsState()
     val currentTheme = themeState.themePreference
     val selectedWarehouse by TvBoxRepository.selectedWarehouse.collectAsState()
     val savedSubscriptionUrl by TvBoxRepository.savedSubscriptionUrl.collectAsState()
     var showThemeDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showWebDavDialog by remember { mutableStateOf(false) }
 
     var isMpvKernel by remember { mutableStateOf(true) }
 
@@ -1247,6 +1253,30 @@ fun ModernSettingsScreen(
             }
         }
 
+        // 云端同步（WebDAV）
+        item {
+            SettingSectionHeader("云端同步")
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SettingRowItem(
+                        icon = Icons.Default.Cloud,
+                        title = "WebDAV 云端同步",
+                        subtitle = if (webDavState.isConfigured) {
+                            "已配置 · ${webDavState.baseUrl.trim().trimEnd('/')}"
+                        } else {
+                            "未配置 · 点击填写服务地址与应用密码"
+                        },
+                        onClick = { showWebDavDialog = true }
+                    )
+                }
+            }
+        }
+
         // 系统信息
         item {
             SettingSectionHeader("系统关于")
@@ -1270,11 +1300,14 @@ fun ModernSettingsScreen(
 
     // 主题模式单选对话框 (完全按照用户提供代码规范)
     if (showThemeDialog) {
-        AlertDialog(
-            onDismissRequest = { showThemeDialog = false },
-            title = { Text(text = "选择主题", color = MaterialTheme.colorScheme.onSurface) },
-            text = {
-                Column {
+        StandardDialog(onDismissRequest = { showThemeDialog = false }) {
+            Text(
+                "选择主题",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Column {
                     ThemePreference.entries.forEach { themeOpt ->
                         Row(
                             modifier = Modifier
@@ -1300,14 +1333,12 @@ fun ModernSettingsScreen(
                         }
                     }
                 }
-            },
-            confirmButton = {
+            Row(modifier = Modifier.align(Alignment.End)) {
                 TextButton(onClick = { showThemeDialog = false }) {
                     Text("取消", color = MaterialTheme.colorScheme.primary)
                 }
-            },
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+            }
+        }
     }
 
     // 主题色选择与 HSV 色盘弹窗
@@ -1328,6 +1359,11 @@ fun ModernSettingsScreen(
     // 独立的“关于 MobileBox”信息展示弹窗
     if (showAboutDialog) {
         AboutAppDialog(onDismiss = { showAboutDialog = false })
+    }
+
+    // WebDAV 云端同步：配置与上传 / 下载 / 双向同步
+    if (showWebDavDialog) {
+        WebDavSyncDialog(onDismiss = { showWebDavDialog = false })
     }
 }
 
@@ -1399,20 +1435,17 @@ fun SettingRowItem(
 fun AboutAppDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "关于 MobileBox",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
+    StandardDialog(onDismissRequest = onDismiss) {
+        Text(
+            "关于 MobileBox",
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp
+        )
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
                 // 1. 版本号
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -1528,14 +1561,12 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
                     )
                 }
             }
-        },
-        confirmButton = {
+        Row(modifier = Modifier.align(Alignment.End)) {
             TextButton(onClick = onDismiss) {
                 Text("确定", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             }
-        },
-        containerColor = MaterialTheme.colorScheme.surface
-    )
+        }
+    }
 }
 
 // -------------------------------------------------------------------------------------
