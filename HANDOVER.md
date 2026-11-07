@@ -1,10 +1,10 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.17（全量追平版 · WebDAV 同步 · 播放行为开关 · 统一弹窗容器 · 直播选台修正 · 设置页内核条目清除）
-> **更新时间**：2026-11-07 19:05
+> **文档版本**：v3.18（首页纯 TMDB · 导航栏去面板 · 数据源真实分类 · 直播/搜索版式统一 · 缺失图骨架化）
+> **更新时间**：2026-11-08 00:5x
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：46 个 Kotlin 文件，约 14.2k 行（实测 14171）
-> **已推送**：`origin/main = d50f2d3`（`c9bea6b` 待推送）
+> **当前规模**：61 个 Kotlin 文件，约 18.8k 行（实测 18786）
+> **已推送**：`origin/main = ecb60c9`；本轮用户验收通过后提交，本地领先 1 个提交（未 push，等用户明确说「推」）
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。
@@ -479,6 +479,34 @@
 
 **开关**：`AnimatedMainScreen.kt` 顶部 `CategoryVariant`，`0` 采集源版（默认）/ `1` TMDB 版 / `2` 旧网格版。
 TMDB 版（`TmdbCategoryScreen.kt`）与旧网格版（`CategoryScreen.kt`）代码整份保留，翻数字即可切回。
+
+
+### 8.25 直播 / 搜索版式统一、缺失图骨架化与分类行进程级缓存（2026-11-08 00:5x 用户验收通过并提交）
+
+**直播页（`AnimatedMainScreen.kt`）**
+- **播放器逻辑一行未动**。播放器下方由「全部分类 + 下拉 + 网格」改成按分组横滑的海报行，一行一组；少数源只给平铺列表时兜一行「全部频道」，不再额外铺一遍「全部」重复全集。
+- `LiveChannelCard` 统一 **112dp 宽 / 2:3 / 12dp 圆角**，与首页、分类页同一套尺寸；左右边距 20dp、卡间距 12dp、行距 20dp。
+- 底部渐隐 `LIVE_FADE_HEIGHT = 110.dp`，列表 `contentPadding` 底部让出 `LIVE_FADE_HEIGHT + 16.dp`，否则最后一行的台名会被渐隐吞掉。
+- **选中框乱**：`clickable` 默认 ripple 会铺满整张卡，看起来像多出一层乱框；改 `MutableInteractionSource + indication = null`，只留自绘选中态。
+- 新增 `ChannelLogo.kt`：`tvg-logo` 有值且加载成功显示真台标；空 / 死链 / 加载中都垫 `PosterPlaceholder` 骨架，不会露灰板。骨架上叠极淡频道名水印（`ShowChannelWatermark` 可关），真台标成功后撤水印，避免透明 PNG 后面透出文字。
+
+**搜索页（`SearchScreen.kt`）**
+- 2 列结果网格换成「**站点名 + 一行横滑海报**」，比例与排版对齐首页 / 分类 / 直播；`poster_{id}` 共享元素 key 保留，跳详情的转场不受影响。缺图同样走 `PosterImage` → 骨架。
+
+**海报缺失统一骨架（`PosterPlaceholder.kt` 重做）**
+- 用户定调三条：色彩克制（Muted Palette）、渐变有方向性（对角线）、有动态质感（柔和扫光）。8.24 那两张电影主题占位图**全部停用**。
+- `SkeletonPalette`：浅色 `#F2F2F7 → #E5E6EA`、深色 `#2C2C2E → #1C1C1E`，`Brush.linearGradient(Offset.Zero → Offset(w,h))`；扫光白 12% / 深色 5%，2600ms 线性无限循环。
+- 明暗**不看** `isSystemInDarkTheme()`，改看 `MaterialTheme.colorScheme.background.luminance()` —— 手动切主题 / 动态取色 / 自定义色都跟得上当前色板。
+- `phase` 由条目 id（seed）稳定散列，各卡扫光不同步、滚动不换相；`progress` 在 draw phase 读取，不触发重组。`SkeletonShimmerEnabled` 可整体关扫光，`label` 是默认关闭的极淡水印。
+- 覆盖：分类页、首页 TMDB 海报行、`StandardPosterCard`（我的 / 旧分类 / 搜索）、直播台标、搜索结果。
+
+**从搜索返回分类「卡一下」（`SourceCategoryScreen.kt`）**
+- **根因**：`home` 是 NavHost 的独立 destination，跳去搜索 / 详情时整棵组合树移出，页面内 `remember { mutableStateMapOf(...) }` 的行片单缓存随之销毁；回来首屏可见行全部重新请求 —— 先露骨架，再过 `Semaphore(2)` 排队，碰到空结果还要等 500ms 重试，视觉上就是「重新加载」。
+- **定案**：`CategoryRowCache` 进程级 object（`ConcurrentHashMap` + `SystemClock.elapsedRealtime()` 30 分钟 TTL），按 `site.key + typeId` 分桶，`peek / put / invalidate(site.key)`；只在 `reloadTick == 0` 时读缓存，下拉刷新按站点清空并强制重拉。返回首帧直接铺上次海报，零网络。
+
+**遗留**
+- `res/drawable-nodpi/` 下 `poster_placeholder_a.webp` / `_b.webp`（已随 `ecb60c9` 入库）与未入库的 `channel_logo_default.webp` 现在**都没有代码引用**，只是中间产物，留着不影响构建；要清理可单独删。
+- 线上 TMDB Worker 未部署（APK 直连 TMDB 是主路），不影响本轮功能。
 
 
 ---

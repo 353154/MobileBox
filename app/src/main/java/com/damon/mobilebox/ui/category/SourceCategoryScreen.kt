@@ -1,5 +1,6 @@
 package com.damon.mobilebox.ui.category
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,7 +40,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -65,6 +65,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 分类页（采集源版，2026-11-07 新建，替换 TMDB 版作为默认分类页）。
@@ -80,9 +81,9 @@ import kotlinx.coroutines.sync.withPermit
  * **为什么一行一个 `LaunchedEffect`**：`LazyColumn` 只组合屏幕内的行，请求自然按需发出。
  * 一次性并发拉 20 个分类会瞬间打满采集源的接口频率限制，首屏也会被一堆转圈拖慢。
  *
- * 行内缓存（[rowCache]）挂在页面作用域、按 站点+分类 存整行结果：
- * 行滚出屏幕再滚回来（`remember` 已随组合销毁）时直接命中缓存，不会二次闪烁。
- * 下拉刷新会清空它并让所有行重新请求。
+ * 行内缓存（[CategoryRowCache]）放在进程级单例、按 站点+分类 存整行结果：
+ * 行滚出屏幕再滚回来、或从搜索 / 详情返回（home 曾整体移出组合）都直接命中，
+ * 不会二次闪烁或重新打接口。下拉刷新会按站点清空并让所有行重新请求。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -99,10 +100,10 @@ fun SourceCategoryScreen(
     val sites by TvBoxRepository.currentSites.collectAsState()
     val realCategories by TvBoxRepository.realCategories.collectAsState()
 
-    // 切换数据源后整页重来：缓存的 key 里带 site.key，这里再显式按站点分桶。
-    val rowCache = remember(selectedSite?.key) {
-        mutableStateMapOf<Int, List<VideoDetailData>>()
-    }
+    // 行片单缓存在进程级单例（CategoryRowCache）里，不用页面 remember：
+    // 搜索 / 详情是 NavHost 的独立 destination，跳过去时 home 整个移出组合，
+    // 返回后所有 remember 都重建。缓存只活在页面里的话，可见行会全部重新发请求，
+    // 于是「骨架 → Semaphore 排队 → 空结果 500ms 重试」整套再走一遍，就是回来卡一下的原因。
     // 行请求的并发闸门。采集源不是无限制的接口：同一时刻打四五个分类，
     // 服务器会偶发返回空 body（连 JSON 都不是），客户端就拿到「空分组」。
     // 22:57 截图里欧美剧 / 台湾剧 / 泰剧 全空、后面的分类却有片，就是这个原因。
@@ -229,7 +230,7 @@ fun SourceCategoryScreen(
                         } else {
                             // 只负责「清缓存 + 放信号」，真正的请求在上面那个
                             // LaunchedEffect（分类树）与各行（片单）里发出。
-                            rowCache.clear()
+                            CategoryRowCache.invalidate(target.key)
                             refreshing = true
                             reloadTick++
                         }
@@ -245,7 +246,6 @@ fun SourceCategoryScreen(
                             CategoryRowSection(
                                 site = site,
                                 category = category,
-                                cache = rowCache,
                                 gate = requestGate,
                                 reloadTick = reloadTick,
                                 onMovieClick = onMovieClick
@@ -298,29 +298,69 @@ fun SourceCategoryScreen(
     }
 }
 
+/**
+ * 分类行片单的进程级缓存。
+ *
+ * 搜索页 / 详情页各自是 NavHost 的独立 destination，`home` 在跳转期间会被移出组合，
+ * 返回时 `AnimatedMainScreen` 连同分类页的所有 `remember` 全部重建。之前行缓存挂在
+ * 页面作用域，返回后首屏可见行全都重新拉片单：先露骨架，再过 Semaphore(2) 排队，
+ * 碰到空结果还要等 500ms 重试 —— 视觉上就是「页面重新加载、卡了一下」。
+ *
+ * 放进 object + 30 分钟 TTL：来回切页面首帧直接铺上次的海报，零网络；
+ * 下拉刷新按站点清空并强制重拉；换源用 site.key 分桶互不污染。
+ */
+private object CategoryRowCache {
+    private const val TTL_MS = 30 * 60 * 1000L
+    private data class Entry(val at: Long, val items: List<VideoDetailData>)
+
+    private val map = ConcurrentHashMap<String, Entry>()
+    private fun key(siteKey: String, typeId: Int) = "$siteKey:$typeId"
+
+    fun peek(siteKey: String, typeId: Int): List<VideoDetailData>? {
+        val k = key(siteKey, typeId)
+        val entry = map[k] ?: return null
+        if (SystemClock.elapsedRealtime() - entry.at > TTL_MS) {
+            map.remove(k)
+            return null
+        }
+        return entry.items
+    }
+
+    fun put(siteKey: String, typeId: Int, items: List<VideoDetailData>) {
+        map[key(siteKey, typeId)] = Entry(SystemClock.elapsedRealtime(), items)
+    }
+
+    fun invalidate(siteKey: String) {
+        val prefix = "$siteKey:"
+        map.keys.toList().forEach { if (it.startsWith(prefix)) map.remove(it) }
+    }
+}
+
 /** 一个分类行：分类名 + 一行横滑海报。 */
 @Composable
 private fun CategoryRowSection(
     site: TvBoxSite,
     category: MacCmsCategory,
-    cache: MutableMap<Int, List<VideoDetailData>>,
     gate: Semaphore,
     reloadTick: Int,
     onMovieClick: (VideoDetailData) -> Unit
 ) {
+    // 初值直接读进程级缓存：返回分类页的第一帧就有海报，不会先闪一排骨架。
     var items by remember(site.key, category.typeId, reloadTick) {
-        mutableStateOf(cache[category.typeId])
+        mutableStateOf<List<VideoDetailData>?>(
+            if (reloadTick == 0) CategoryRowCache.peek(site.key, category.typeId) else null
+        )
     }
     LaunchedEffect(site.key, category.typeId, reloadTick) {
         // 刷新过（缓存已清空）就一定要走网络；否则命中缓存直接铺。
         if (reloadTick == 0) {
-            cache[category.typeId]?.let {
+            CategoryRowCache.peek(site.key, category.typeId)?.let {
                 items = it
                 return@LaunchedEffect
             }
         }
         val list = loadCategoryRow(site, category.typeId, gate)
-        cache[category.typeId] = list
+        CategoryRowCache.put(site.key, category.typeId, list)
         items = list
     }
 

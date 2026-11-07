@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
@@ -96,6 +97,7 @@ import com.damon.mobilebox.ui.components.LiveStreamPreview
 import com.damon.mobilebox.ui.components.BingWallpaperBackdrop
 import com.damon.mobilebox.ui.components.BingWallpaperStore
 import com.damon.mobilebox.ui.components.GlassControlButton
+import com.damon.mobilebox.ui.components.ChannelLogo
 import com.damon.mobilebox.ui.category.CategoryScreen
 import com.damon.mobilebox.ui.category.SourceCategoryScreen
 import com.damon.mobilebox.ui.category.TmdbCategoryScreen
@@ -108,6 +110,8 @@ import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.components.TvBoxSubscriptionDialog
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.tvbox.EpgPrograms
+import com.damon.mobilebox.data.tvbox.EpgSlot
+import com.damon.mobilebox.data.tvbox.LiveChannel
 import com.damon.mobilebox.data.tvbox.TvBoxSite
 import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
@@ -384,9 +388,6 @@ fun LiveScreenContent(
         mutableStateOf(liveChannels.find { it.name.contains("CCTV-1") } ?: liveChannels.firstOrNull())
     }
 
-    // 选中的分类：-1 为“全部”，>=0 为 liveGroups 中的具体索引
-    var selectedGroupIndex by remember { mutableIntStateOf(-1) }
-
     // 是否开启播放：唯一入口是中间的大播放按钮，选台不会触发播放
     var isPlayerActive by remember { mutableStateOf(false) }
 
@@ -411,22 +412,16 @@ fun LiveScreenContent(
         selectedChannel?.let { TvBoxRepository.ensureChannelEpg(it) }
     }
 
-    // 所有可用分类（服务端拉取的数据源联动）
-    val categoryList = remember(liveGroups, liveChannels) {
-        if (liveChannels.isEmpty()) {
-            emptyList()
-        } else {
-            listOf("全部" to liveChannels) + liveGroups.map { it.groupName to it.channels }
-        }
-    }
-
-    // 当前分类下的电视频道列表
-    val displayedChannels = remember(selectedGroupIndex, categoryList, liveChannels) {
-        if (selectedGroupIndex == -1 || categoryList.isEmpty()) {
-            liveChannels
-        } else {
-            categoryList.getOrNull(selectedGroupIndex + 1)?.second ?: liveChannels
-        }
+    // 频道分组：直接把 liveGroups 展开成「分组名 + 频道」，一行一组、组内横滑。
+    // 不再设「全部」这一档 —— 分组本身就是全集，再铺一行「全部」等于把所有频道重复一遍。
+    // 少数源只给平铺列表、不给分组，这时兜一行「全部频道」。
+    val liveRows = remember(liveGroups, liveChannels) {
+        val rows = liveGroups
+            .map { it.groupName.ifBlank { "未分组" } to it.channels }
+            .filter { it.second.isNotEmpty() }
+        if (rows.isNotEmpty()) rows
+        else if (liveChannels.isNotEmpty()) listOf("全部频道" to liveChannels)
+        else emptyList()
     }
 
     StandardPullToRefreshBox(
@@ -489,10 +484,30 @@ fun LiveScreenContent(
                 }
             }
         } else {
+            // 渐隐终点色：drawWithContent 的 lambda 不是 composable，主题色得先取出来。
+            val pageBg = MaterialTheme.colorScheme.background
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(if (isLandscape) Color.Black else MaterialTheme.colorScheme.background)
+                    .background(if (isLandscape) Color.Black else pageBg)
+                    // ---- 底部渐隐：与首页 / 分类页同一套「化开」----
+                    // 导航栏没有托底面板，图标直接浮在页面上；频道行滚到底部时如果不淡进底色，
+                    // 最后一行台标会在图标上方被切出一条硬边。横屏是满屏播放器，不叠这一层。
+                    // 画在内容之上而不是下层，所以必须走 drawWithContent。
+                    .drawWithContent {
+                        drawContent()
+                        if (!isLandscape) {
+                            val h = size.height.coerceAtLeast(1f)
+                            val from = ((h - LIVE_FADE_HEIGHT.toPx()) / h).coerceIn(0f, 1f)
+                            drawRect(
+                                Brush.verticalGradient(
+                                    0f to Color.Transparent,
+                                    from to Color.Transparent,
+                                    1f to pageBg
+                                )
+                            )
+                        }
+                    }
             ) {
                 // 1. 顶部播放框 (竖屏为 16:9 黑色圆角卡片；横屏为 100% 满屏影院直播，同一个 MobileVideoPlayer 节点不被销毁)
                 Box(
@@ -665,160 +680,192 @@ fun LiveScreenContent(
                     }
                 }
 
-                // 2. 播放框下方的电视直播分类与电视台列表 (仅在竖屏状态下展示，横屏下完全隐藏避让)
+                // 2. 频道分类：与分类页同一套版式 —— 一行一个分组，组内横向滑频道卡。
+                //    播放器那一段一行没动，分类与频道列表只是接在它下面。
                 if (!isLandscape) {
-                    if (categoryList.size > 1) {
-                        val liveCategoryState = rememberLazyListState()
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                        ) {
-                            LazyRow(
-                                state = liveCategoryState,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .horizontalScrollFadingEdge(liveCategoryState, 40.dp),
-                                contentPadding = PaddingValues(start = 16.dp, end = 32.dp, top = 6.dp, bottom = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(categoryList.indices.toList()) { index ->
-                                    val (groupName, channels) = categoryList[index]
-                                    val isSelected = index == (selectedGroupIndex + 1)
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            selectedGroupIndex = index - 1
-                                        },
-                                        label = {
-                                            Text(
-                                                text = "$groupName (${channels.size})",
-                                                fontSize = 13.sp,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(50),
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                                        ),
-                                        border = null
-                                    )
-                                }
-                            }
+                    LiveChannelRows(
+                        rows = liveRows,
+                        selectedChannel = selectedChannel,
+                        isPlayerActive = isPlayerActive,
+                        epgPrograms = epgPrograms,
+                        epgTemplate = epgTemplate,
+                        nowTick = nowTick,
+                        onChannelClick = { selectedChannel = it }
+                    )
+                }
+            }
+        }
+    }
+}
 
+// -------------------------------------------------------------------------------------
+// 4.1 频道分组列表（直播页下半屏，版式与分类页同一套）
+// -------------------------------------------------------------------------------------
+
+/**
+ * 一行一个频道分组：行标题 = 分组名，行内横向滑动台标卡。
+ *
+ * **为什么不是「分类胶囊 + 一个纵向列表」**：找台的路径是「先定位分类（央视/卫视/地方），
+ * 再在这一类里横扫」，横滑比逐行纵向扫更快；而且和首页 / 分类页的手感统一，
+ * 三个页面用的是同一组边距（20dp）与间距（12dp）。
+ *
+ * 播放器那一段不在这个函数里，也没有被改动 —— 它仍然是 `LiveScreenContent` 顶部的
+ * 16:9 圆角卡片，选台只切换它的预览源。
+ */
+@Composable
+private fun LiveChannelRows(
+    rows: List<Pair<String, List<LiveChannel>>>,
+    selectedChannel: LiveChannel?,
+    isPlayerActive: Boolean,
+    epgPrograms: Map<String, List<EpgSlot>>,
+    epgTemplate: String?,
+    nowTick: Long,
+    onChannelClick: (LiveChannel) -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        // 底部留白必须 ≥ 渐隐高度：否则最后一行永远停在渐变里，频道名和节目名
+        // 会淡到几乎看不见（00:44 截图「地方卫视」那行）。留够之后向上滚一屏
+        // 就能把任意一行完整推到渐隐之上。渐隐本身是首页 / 分类页同一套，不动。
+        contentPadding = PaddingValues(top = 2.dp, bottom = LIVE_FADE_HEIGHT + 16.dp)
+    ) {
+        items(count = rows.size) { rowIndex ->
+            val (groupName, channels) = rows[rowIndex]
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp)
+            ) {
+                Text(
+                    text = groupName,
+                    color = scheme.onBackground,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        count = channels.size,
+                        // 同一分组里偶尔会有同名频道（不同清晰度 / 备用线路），
+                        // 只用名字做 key 会撞车，索引一起带上。
+                        key = { i -> "$groupName#$i#${channels[i].name}" }
+                    ) { i ->
+                        val channel = channels[i]
+                        // 只查询真正可见的频道，结果由 Repository 按「频道 + 日期」去重缓存
+                        LaunchedEffect(channel.name, epgTemplate) {
+                            TvBoxRepository.ensureChannelEpg(channel)
                         }
-                    }
-
-                    // 3. 电视台列表 (点击不同电视台切换不同的台)
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        items(displayedChannels) { channel ->
-                            // 只查询真正可见的频道，结果由 Repository 按天缓存
-                            LaunchedEffect(channel.name, epgTemplate) {
-                                TvBoxRepository.ensureChannelEpg(channel)
-                            }
-                            // 判定当前台必须用「分组 + 频道名」，不能用 url：
-                            // 直播源里不同频道共用同一条主线路很常见（CGTN 法语 / 西语 / 阿语三台
-                            // 的主线路完全一致，只有备用线路不同），按 url 比对会一次点亮三行（用户 18:51 反馈）。
-                            val isCurrent = selectedChannel?.let {
-                                it.name == channel.name && it.group == channel.group
-                            } == true
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        // 选台只切换模糊预览源，正式播放唯一入口是中间的大播放按钮
-                                        selectedChannel = channel
-                                    },
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isCurrent) {
-                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-                                    } else {
-                                        MaterialTheme.colorScheme.surface
-                                    }
-                                ),
-                                border = BorderStroke(
-                                    0.5.dp,
-                                    if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                                ),
-                                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // 左侧图标：选中且播放时为蓝色圆形扬声器，否则为灰色电视机
-                                    if (isCurrent && isPlayerActive) {
-                                        Surface(
-                                            shape = CircleShape,
-                                            color = Color(0xFF1E88E5),
-                                            modifier = Modifier.size(42.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    imageVector = Icons.Default.VolumeUp,
-                                                    contentDescription = "正在播放",
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                            modifier = Modifier.size(42.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Tv,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(22.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Spacer(modifier = Modifier.width(14.dp))
-
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = channel.name,
-                                            fontSize = 15.sp,
-                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
-                                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                        val channelEpg = remember(epgPrograms, channel, nowTick) {
-                                            EpgPrograms.lookup(epgPrograms, channel, nowTick)
-                                        }
-                                        if (channelEpg != null) {
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(
-                                                text = EpgPrograms.formatList(channelEpg),
-                                                fontSize = 12.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        // 判定当前台必须用「分组 + 频道名」，不能用 url：
+                        // 直播源里不同频道共用同一条主线路很常见（CGTN 法语 / 西语 / 阿语三台
+                        // 的主线路完全一致，只有备用线路不同），按 url 比对会一次点亮三行。
+                        val isCurrent = selectedChannel?.let {
+                            it.name == channel.name && it.group == channel.group
+                        } == true
+                        val epg = remember(epgPrograms, channel, nowTick) {
+                            EpgPrograms.lookup(epgPrograms, channel, nowTick)
                         }
+                        LiveChannelCard(
+                            channel = channel,
+                            isCurrent = isCurrent,
+                            isPlaying = isCurrent && isPlayerActive,
+                            // 卡片只有 112dp 宽，塞不下「正在播: X | 稍后: Y」整串，
+                            // 只取当前节目名；当前档还没解析出来时退回下一档。
+                            epgText = epg?.current?.title ?: epg?.next?.title,
+                            onClick = { onChannelClick(channel) }
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+/** 单个频道卡：尺寸 / 比例 / 圆角 / 标题字号与分类页 `SourcePoster` 逐项对齐。 */
+@Composable
+private fun LiveChannelCard(
+    channel: LiveChannel,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    epgText: String?,
+    onClick: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    val logoShape = RoundedCornerShape(12.dp)
+    Column(
+        modifier = Modifier
+            .width(112.dp)
+            .clip(RoundedCornerShape(12.dp))
+            // 必须关掉默认 ripple：它的 stateLayer 会铺满整张卡（连同频道名、节目名），
+            // 而选中边框只围住上方图片区，两者叠在一起就是「框和底板不对齐」的乱相
+            // （00:44 截图 CCTV-3）。选中反馈由边框 + 频道名变主题色表达，不需要水波纹。
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(logoShape)
+                .background(scheme.onSurface.copy(alpha = 0.06f))
+                .border(
+                    width = if (isCurrent) 2.dp else 0.5.dp,
+                    color = if (isCurrent) scheme.primary
+                    else scheme.outlineVariant.copy(alpha = 0.35f),
+                    shape = logoShape
+                )
+        ) {
+            // 有台标用台标，没有 / 加载失败用占位图（占位垫底，不露灰板）
+            ChannelLogo(
+                url = channel.logo,
+                name = channel.name,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (isPlaying) {
+                Surface(
+                    color = Color(0xFF1E88E5),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                ) {
+                    Text(
+                        text = "播放中",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = channel.name,
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+            color = if (isCurrent) scheme.primary else scheme.onBackground.copy(alpha = 0.92f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (!epgText.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = epgText,
+                fontSize = 11.sp,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -1428,6 +1475,12 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 // -------------------------------------------------------------------------------------
 /** 玻璃板高度（不含底部安全区）。 */
 private val NavBarHeight = 62.dp
+
+/**
+ * 直播页底部的渐隐高度。与首页、分类页取同一个 110dp —— 三个页面的列表
+ * 在导航栏图标上方「化开」的深浅必须一致，否则切 Tab 会看到三种不同的收尾。
+ */
+private val LIVE_FADE_HEIGHT = 110.dp
 
 /**
  * 分类页用哪个实现。
