@@ -115,6 +115,13 @@ fun MovieDetailScreen(
     val heroHeight = (configuration.screenHeightDp.dp * 0.82f).coerceIn(420.dp, 640.dp)
     val heroHeightPx = with(density) { heroHeight.toPx() }
 
+    // ---- 顶部安全区（ROADMAP Step 2.3）----
+    // B 层是独立的全屏滚动视口。内容滚到顶时，正文会一直画到 y=0，钻进状态栏与挖孔区域。
+    // 修法不是给内容加 padding（那会让首屏片名整体下移、脱离海报底部），
+    // 而是把「视口本身」下移到状态栏下沿，再让首块高度减去同一数值 ——
+    // 片名底部仍落在 heroHeight 处，首屏视觉零变化；而滚动止步于状态栏下沿。
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
     // 首帧直接透传真实数据，杜绝片名闪烁
     val finalData = remember(movieId, videoData, posterUrl, initialTitle) {
         val base = videoData ?: TvBoxRepository.selectedDetail?.takeIf { it.id.trim() == movieId.trim() }
@@ -309,6 +316,8 @@ fun MovieDetailScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        // 视口下移到状态栏下沿：内容滚到顶时止步于此，不会钻进状态栏/挖孔
+                        .padding(top = statusBarTop)
                         .verticalScroll(scrollState)
                 ) {
                     // 字色：起点由海报亮度决定（浅色海报直接起手深色字），
@@ -319,10 +328,11 @@ fun MovieDetailScreen(
                     CompositionLocalProvider(LocalBTextColors provides bColors) {
 
                     // B 层首块：与 A 层等高的透明容器，片名/元信息底部对齐，随滚动上移
+                    // 高度扣掉视口已下移的状态栏高度，片名底部仍与海报底部对齐（首屏不变）
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(heroHeight)
+                            .height((heroHeight - statusBarTop).coerceAtLeast(0.dp))
                     ) {
                         Column(
                             modifier = Modifier

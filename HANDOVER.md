@@ -1,9 +1,9 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.1（直播多线路 · EPG 换源 · 文档订正版）
+> **文档版本**：v3.3（阶段二收官 · 全站搜索 · 测试分发版）
 > **更新时间**：2026-11-07
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：37 个 Kotlin 文件，约 10.1k 行
+> **当前规模**：38 个 Kotlin 文件，约 10.5k 行
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。**第四章（详情页）与第五章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
@@ -16,7 +16,7 @@
 
 | 维度 | 现状 |
 | :--- | :--- |
-| UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载 |
+| UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载；搜索页与详情页是独立路由 |
 | 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化。深色 `background #0D1117` / `surface #161B22`，浅色 `background #F2F2F7` / `surface #FFFFFF`（`AppTheme.kt` 为准，文档旧版写的 `#0E121A` 是错的） |
 | 播放 | **Media3 ExoPlayer 单内核**，`PlayerDetailScreen` 全屏播放层。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十一章已知问题 1），并未真正切换内核 |
 | 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 + 同频道多线路自动切换 |
@@ -35,7 +35,7 @@
 | `ui/components/StandardPosterCard.kt` | **全局唯一海报卡片** | 3D 视差 + `sharedBounds` + `parallaxWeight` 抑制，层级结构不可随意调整 |
 | `ui/components/ParallaxEffect.kt` | 陀螺仪角度（相对握持基线）+ 应用级常驻监听 | 见 7.3 |
 | `ui/components/PosterTone.kt` | 海报明暗采样，决定叠在海报上的字色 | 见第六章 |
-| `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场）** | 全项目最敏感的文件，改之前读第六章 |
+| `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场）** | 全项目最敏感的文件，改之前读第四章 |
 | `ui/search/SearchScreen.kt` | 全站搜索页（搜索框 + 2 列结果网格） | **刻意不自动聚焦**，原因见 8.4 |
 | `ui/components/StandardPullToRefreshBox.kt` | 自研下拉刷新（内容跟手位移） | 不要换成 M3 `PullToRefreshBox` |
 | `ui/components/ImageUrlCompat.kt` | 图片 URL 降级 + 失败重试 | 采集站 CDN 只支持 http |
@@ -46,7 +46,7 @@
 | `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 | 所有切换相关状态都不能 `remember(streamUrl)`，见 3.1 |
 | `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型 | 控制按钮用 M3 原生；**目前没有任何触摸手势**（亮度/音量/Seek 属于 ROADMAP Step 3.2） |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
-| `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/选中站点） | 幂等初始化，见 8.3 |
+| `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/全站搜索/选中站点） | `cacheInitialized` 保证 `initFromCache` 幂等，见 7.2；首启自动订阅见 8.5 |
 
 ---
 
@@ -58,6 +58,7 @@
 - **直播**：分组 chips → 频道列表；右侧详情区静音预拉流并实时高斯模糊，加载期 Bing 壁纸轮播；**点播放按钮才开始播放**；EPG 有数据才显示，没有就整行不出现。同一频道配置了多条线路时**自动切换**（见 3.1）。
 - **设置**：主题、色盘、3D 开关、订阅源管理。开关状态一律走 `StateFlow`（见 7.4）。
 - **我的**：收藏/在看的指标卡 + 空状态（68dp 紧凑行）。
+- **搜索**（独立路由 `search`，不在 Tab 内）：首页顶栏图标进入，并发查询所有可搜索站点、按片名去重，结果 2 列网格复用 `StandardPosterCard`；从详情页返回保留上次结果、不重查、不弹键盘（见 8.4）。
 
 ### 3.1 直播多线路自动切换
 `live.txt` / `live.m3u` 里同一个频道通常配了 3 条以上线路，`deduplicateGroups` 会把它们聚合成 `LiveChannel.urls`。播放器按这个顺序当备用源：
@@ -89,15 +90,18 @@
 
 ### 4.3 B 层：只有 Y 位移
 - 独立 `fillMaxSize().verticalScroll()`，声明在遮罩之后，因此绘制在其上。
-- 首块是 `height(heroHeight)` 的**透明** Box（片名底部对齐），其后是简介 / 播放资源 / 演职人员 / 分类 / 预告片 / 剧照 / 操作行。
+- 首块是 `height(heroHeight - statusBarTop)` 的**透明** Box（片名底部对齐），其后是简介 / 播放资源 / 演职人员 / 分类 / 预告片 / 剧照 / 操作行。
 - 内容面板**完全透明**，不加任何背景。
+- **顶部安全区（Step 2.3，2026-11-07 验收）**：B 层是全屏滚动视口，视口上沿原本就是 y=0，内容滚到顶会画进状态栏/挖孔。修法是**移动视口而不是移动内容** —— `Column` 加 `.padding(top = statusBarTop)`，同时首块高度减去同一个 `statusBarTop`，保证 `statusBarTop + (heroHeight - statusBarTop) = heroHeight`，片名位置分毫不动。
+  - `statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()`，`enableEdgeToEdge()` 已开启，返回值含挖孔安全区；若某设备返回 0 会自动退回原样。
+  - **反例**：只给内容加 padding 而不减首块高度 —— 片名整体下移、脱离海报底部，首屏就变形了。
 
 ### 4.4 禁止添加的装饰（都被用户明确要求删过）
 铺满首块的黑阶、片名局部暗底、内容面板「透明→白」空间渐变、衔接暗色层、纯白硬切面板、随滚动加深的黑 Scrim、132dp 大留白、浮动按钮。这些都会切出水平硬边或脏灰带。
 
 ### 4.5 字色
 - `LocalBTextColors`（`MovieDetailScreen.kt`）提供 `primary/secondary`。**必须是 `compositionLocalOf`（动态）而不是 `staticCompositionLocalOf`**：值随滚动每帧变化，静态版本会让所有读取者无条件整页重组；动态版本只重组真正读它的节点。
-- **起点**由海报亮度决定（见 6.5）：深色海报 → 白字；浅色海报 → 近黑字。
+- **起点**由海报亮度决定（见第六章）：深色海报 → 白字；浅色海报 → 近黑字。
 - **终点**跟随主题：`surface.luminance() > 0.5` → `BTextPrimary/BTextSecondary`（近黑/中灰），否则 `BTextPrimaryDark/BTextSecondaryDark`（近白/浅灰）。
 - 中途 `lerp(起点, 终点, veilProgress)`。
 - **压在固定浅底上的文字必须用固定 `BTextPrimary`**：`立即播放` 按钮（容器 `#E4E7EE`）、演职人员头像首字（固定莫兰迪底色）。跟随动态字色会在深色主题下变成白字压浅灰。
@@ -191,6 +195,14 @@
 - 日志：`MB-EPG`。
 - **历史坑**：订阅里原有的 `xyzweb.cyou/tvbox/epg` 会恒定返回 `{"epg_data":[]}`（上游后端空了），`epg.112114.xyz` 域名已不可达 —— 排查时先用手机 `curl` 验源，别怀疑自己的解析。核对解析结果要看设备侧 `cache/epg_global_v1.txt`，本机 curl 拿到的 jsdelivr 副本可能是旧日期的。
 
+### 8.3 图片 CDN 兼容（`ImageUrlCompat.kt`）
+`p.bfvp26.com` 等采集站 CDN：https 端口 SSL 握手直接失败、且会间歇返回 200 + `text/html` 拦截页。
+- `String.toLoadableImageUrl()`：https 统一降级 http（Manifest 已开 `usesCleartextTraffic`）。
+- `rememberRetryableImageRequest()`：`onError` 换新 key 重试，最多 4 次；缓存键与 URL 保持一致，首页成功加载后详情页可直接命中内存缓存。
+- 日志：`MB-IMG: OK/FAIL url attempt=n`。
+
+> 若海报「不显示」，先查这里，**不要因为黑屏就把详情页 Hero 搬回滚动流**（那会让海报跟手移动）。
+
 ### 8.4 全站搜索
 - `TvBoxRepository.searchAll(keyword)`：并发请求所有 `searchable` 站点（`ac=videolist&wd=`，各取第一页），带 `callTimeoutMs = 8_000` 封顶；合并后按片名去重、保留总集数最多的一条，名称完全匹配的排最前。
 - 返回 `SearchHit(detail, siteKey, siteName)`，列表 key 用 `站点_站内id` —— **各站自增 id 会互相撞**，直接用 `detail.id` 会让 LazyGrid 因重复 key 崩溃。
@@ -199,13 +211,16 @@
 - **不要给搜索框加自动聚焦**：进页面就 `requestFocus()` 会出现「输入框已聚焦但输入法没弹」的僵持态（导航转场期间系统会丢掉 IME 的 show 请求），此时用户再点同一个输入框不产生新的焦点事件，表现为「点了没反应」。交给用户点击触发最稳。
 - 排查提示：`mInputShown=true` 但屏幕上没有键盘时，先用**另一个 App + 同一个输入法**做对照，别急着判定输入法坏了。
 
-### 8.3 图片 CDN 兼容（`ImageUrlCompat.kt`）
-`p.bfvp26.com` 等采集站 CDN：https 端口 SSL 握手直接失败、且会间歇返回 200 + `text/html` 拦截页。
-- `String.toLoadableImageUrl()`：https 统一降级 http（Manifest 已开 `usesCleartextTraffic`）。
-- `rememberRetryableImageRequest()`：`onError` 换新 key 重试，最多 4 次；缓存键与 URL 保持一致，首页成功加载后详情页可直接命中内存缓存。
-- 日志：`MB-IMG: OK/FAIL url attempt=n`。
+### 8.5 首启自动订阅与测试分发
+给他人打包测试时，App 不能是「装上打开一片空白、还要自己找源」的状态。机制如下：
 
-> 若海报「不显示」，先查这里，**不要因为黑屏就把详情页 Hero 搬回滚动流**（那会让海报跟手移动）。
+- **源地址不进代码**：`local.properties` 里配 `DEFAULT_SUB_URL=https://...`（该文件本就被 `.gitignore` 忽略），`app/build.gradle.kts` 在配置阶段读它并 `buildConfigField("String", "DEFAULT_SUB_URL", ...)` 注入。别人 clone 仓库编译时该值为空，行为退回原本的空白引导，**不会泄露源地址**。
+- **首启自动订阅**：`TvBoxRepository.initFromCache` 里，若 DataStore 没有保存过订阅且 `BuildConfig.DEFAULT_SUB_URL` 非空，就自动 `loadSubscription` 一次（日志 tag `MB-SUB`）。成功后写入 DataStore，之后走正常恢复路径；失败只记日志，**绝不伪造任何数据**。
+- **注意 AGP 8 默认关闭 BuildConfig 生成**，必须在 `buildFeatures` 里显式写 `buildConfig = true`，否则 `BuildConfig.DEFAULT_SUB_URL` 编译不过。
+- **release 可安装**：`release` 原本没有 signingConfig，产出的是 unsigned APK（装不上）。现在 `signingConfig = signingConfigs.getByName("debug")`，产物可直接发给别人装。**上架前必须换成自己的 keystore**，debug 证书不能发布。
+- 打包：`./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`。首次全量约 6 分钟；`gradle.properties` 已开 `org.gradle.caching`，零改动重建约 1 分钟。
+- 接收方注意：需要在系统里允许「安装未知来源应用」；若之前装过同包名但不同签名的版本，会提示「应用未安装」，先卸载旧的。
+- **与 debug 包签名相同**（都是 debug keystore），两者会互相覆盖，不能共存。
 
 ---
 
@@ -233,6 +248,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 | `MB-EPG` | EPG 模板候选、全局源覆盖数、频道命中/无节目单 |
 | `MB-LIVE` | 直播自动切换线路：`自动切线路 2/4 (起播超时)`、`全部线路不可用 (...)` |
 | `MB-DETAIL` | 详情页当前海报 URL |
+| `MB-SUB` | 首启使用内置默认订阅、以及内置订阅加载失败 |
 
 ### 视觉问题排查方法（成本远低于反复改代码试错）
 `screenrecord` 录屏 → `ffmpeg` 30fps 抽帧 → 分区逐帧差分（`numpy` 均值差）定位到具体帧 → 裁剪放大拼图看变化形态。
@@ -254,12 +270,13 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 
 **已知问题**
 1. **设置页「MPV 高性能解码内核」开关是纯 UI 占位**（`AnimatedMainScreen.kt` 里 `var isMpvKernel by remember { mutableStateOf(true) }`）：不持久化、不接线播放器、不重启保持，文案却会显示「已回退为 IJKPlayer 内核」。实际播放链一直是 Media3 ExoPlayer。要么在 Step 3.1 时把内核切换真正做出来，要么先把开关改回只读的「当前内核：ExoPlayer」。
-2. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让（注意别切出水平硬边）。这是 Step 2.3 唯一剩余项。
-3. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
-4. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
-5. 播放器**没有任何触摸手势**（无亮度/音量/Seek/双击暂停，见 ROADMAP Step 3.2），全屏页只靠底部控制条操作。
+2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
+3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
+4. 播放器**没有任何触摸手势**（无亮度/音量/Seek/双击暂停，见 ROADMAP Step 3.2），全屏页只靠底部控制条操作。
+
+> 详情页 B 层顶部安全区已于 2026-11-07 修复并验收（Step 2.3），见 4.3。
 
 **下一步（按 ROADMAP）**
-- Step 2.3 收尾：详情页 B 层顶部安全区避让（只剩这一项，阶段二即可全部关闭）
+- **阶段二已全部关闭**（Step 2.1 / 2.2 / 2.3 / 2.4 均验收通过）
 - Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）
 - Step 3.2 全屏触控手势 → Step 3.3 弹幕/PiP → Step 3.4 画质增强
