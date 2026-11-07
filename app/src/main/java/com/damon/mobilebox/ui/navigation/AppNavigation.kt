@@ -8,15 +8,19 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.SharedPosterTransition
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import com.damon.mobilebox.ui.main.AnimatedMainScreen
+import com.damon.mobilebox.ui.player.PipController
 import com.damon.mobilebox.ui.search.SearchScreen
 import com.damon.mobilebox.ui.theme.ThemeManager
 import java.net.URLDecoder
@@ -30,6 +34,12 @@ import java.net.URLEncoder
 @Composable
 fun AppNavigation(themeManager: ThemeManager) {
     val navController = rememberNavController()
+
+    // 上报当前可见路由给画中画控制器：转场期间播放器实例还在，但用户眼前可能已经是别的页面
+    val currentEntry by navController.currentBackStackEntryAsState()
+    LaunchedEffect(currentEntry) {
+        PipController.visibleRoute = currentEntry?.destination?.route
+    }
 
     SharedTransitionLayout {
         NavHost(

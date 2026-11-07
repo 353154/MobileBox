@@ -20,11 +20,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MobileBox">
 
-        <!-- 移动端主界面，竖屏为主 -->
+        <!-- 移动端主界面，竖屏为主；支持画中画（按 Home 缩成小窗继续播） -->
         <activity
             android:name=".ui.main.MainActivity"
             android:exported="true"
             android:screenOrientation="portrait"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

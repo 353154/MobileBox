@@ -83,13 +83,20 @@ fun PlayerDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (isLandscape) Color.Black else PlayerBackground)
+            .background(if (isLandscape || PipController.isInPip) Color.Black else PlayerBackground)
+            // 竖屏播放时整页避开状态栏：否则视频画面从 y=0 开始，时间/电量会直接压在画面上，
+            // 顶部返回按钮也会顶进挖孔区。横屏全屏播放会自行隐藏系统栏，不需要这段。
+            .then(
+                if (isLandscape || PipController.isInPip) Modifier
+                else Modifier.statusBarsPadding()
+            )
     ) {
         // 核心：单实例播放器，横屏占满全屏，竖屏保持 16:9 视窗 (横竖屏切换无缝平滑，ExoPlayer 实例永不销毁)
+        // 画中画：小窗里必须铺满，否则会露出下面的选集面板（窗口只有手掌大，没地方放列表）
         MobileVideoPlayer(
             streamUrl = currentEpisode.streamUrl,
             title = "${videoData.title} · ${currentEpisode.name}",
-            modifier = if (isLandscape) {
+            modifier = if (isLandscape || PipController.isInPip) {
                 Modifier.fillMaxSize()
             } else {
                 Modifier
@@ -99,8 +106,8 @@ fun PlayerDetailScreen(
             onBackClick = onBackClick
         )
 
-        // 竖屏状态下显示选集与详情面板，横屏下自动隐藏
-        if (!isLandscape) {
+        // 竖屏状态下显示选集与详情面板，横屏与画中画下自动隐藏
+        if (!isLandscape && !PipController.isInPip) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
