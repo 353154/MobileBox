@@ -257,8 +257,7 @@ fun AnimatedMainScreen(
                                     ModernSettingsScreen(
                                         themeManager = themeManager,
                                         selectedSite = selectedSite,
-                                        onOpenSourceDialog = { showSourceDialog = true },
-                                        onShowToast = { toastMessage = it }
+                                        onOpenSourceDialog = { showSourceDialog = true }
                                     )
                                 }
                                 4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -960,8 +959,7 @@ fun LiveScreenContent(
 fun ModernSettingsScreen(
     themeManager: ThemeManager,
     selectedSite: TvBoxSite?,
-    onOpenSourceDialog: () -> Unit,
-    onShowToast: (String) -> Unit = {}
+    onOpenSourceDialog: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     val themeState by themeManager.appThemeStateFlow.collectAsState()
@@ -975,7 +973,6 @@ fun ModernSettingsScreen(
     var showAboutDialog by remember { mutableStateOf(false) }
 
     var isMpvKernel by remember { mutableStateOf(true) }
-    var isBiometricEnabled by remember { mutableStateOf(false) }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -999,12 +996,7 @@ fun ModernSettingsScreen(
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Storage,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.Storage)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1031,8 +1023,8 @@ fun ModernSettingsScreen(
                         Icon(
                             imageVector = Icons.Default.ChevronRight,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.size(20.dp)
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -1057,12 +1049,7 @@ fun ModernSettingsScreen(
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.DarkMode,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.DarkMode)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1095,12 +1082,7 @@ fun ModernSettingsScreen(
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.ColorLens,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.ColorLens)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1123,7 +1105,7 @@ fun ModernSettingsScreen(
                         // 右侧展示当前主题色的微型圆球
                         Box(
                             modifier = Modifier
-                                .size(20.dp)
+                                .size(18.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.primary)
                         )
@@ -1144,12 +1126,7 @@ fun ModernSettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.ScreenRotation,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.ScreenRotation)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1194,12 +1171,7 @@ fun ModernSettingsScreen(
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Memory,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.Memory)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("MPV 高性能解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
@@ -1219,12 +1191,7 @@ fun ModernSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PictureInPictureAlt,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.PictureInPictureAlt)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1254,12 +1221,7 @@ fun ModernSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Headphones,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        SettingLeadingIcon(Icons.Default.Headphones)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1285,9 +1247,9 @@ fun ModernSettingsScreen(
             }
         }
 
-        // 安全与系统信息
+        // 系统信息
         item {
-            SettingSectionHeader("安全与系统关于")
+            SettingSectionHeader("系统关于")
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1295,25 +1257,6 @@ fun ModernSettingsScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("生物识别隐私锁 (Biometric)", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                            Text("开启后访问成人/私密分类需验证指纹或面容", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        CupertinoSwitch(
-                            checked = isBiometricEnabled,
-                            onCheckedChange = {
-                                isBiometricEnabled = it
-                                onShowToast(if (it) "已开启生物识别隐私锁" else "已关闭生物识别隐私锁")
-                            }
-                        )
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
                     SettingRowItem(
                         icon = Icons.Default.Info,
                         title = "关于 MobileBox",
@@ -1388,6 +1331,25 @@ fun ModernSettingsScreen(
     }
 }
 
+/**
+ * 设置项左侧图标的统一容器：固定 24dp 占位、22dp 绘制、统一 primary 着色。
+ * Material 各图标内部留白不同，用统一容器保证每行文字起始位置与图标视觉尺寸一致。
+ */
+@Composable
+private fun SettingLeadingIcon(imageVector: androidx.compose.ui.graphics.vector.ImageVector) {
+    Box(
+        modifier = Modifier.size(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
 @Composable
 fun SettingSectionHeader(title: String) {
     // 分组标题此前为 14.sp，反而小于列表项标题的 15.sp，层级是倒挂的，
@@ -1417,7 +1379,7 @@ fun SettingRowItem(
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+        SettingLeadingIcon(icon)
         Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
