@@ -1164,9 +1164,9 @@ fun ModernSettingsScreen(
             }
         }
 
-        // 播放内核与安全
+        // 播放行为（画中画 / 后台播放）
         item {
-            SettingSectionHeader("播放内核与视频增强")
+            SettingSectionHeader("播放设置")
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1174,41 +1174,8 @@ fun ModernSettingsScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    // 解码内核：只读真状态。双核 IJK / MPV 属 Step 3.1，用户已明确跳过，
-                    // 所以这里不再放假开关 —— 避免「文案说切了 IJKPlayer，实际一直跑 ExoPlayer」的误导。
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SettingLeadingIcon(Icons.Default.Memory)
-                        Spacer(modifier = Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("解码内核", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                "固定使用 Media3 ExoPlayer（硬解优先）· 双核 IJK / MPV 未接入",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(
-                                "ExoPlayer",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(vertical = 12.dp))
+                    // 解码内核固定为 Media3 ExoPlayer，不是可配置项，故不在设置页占位。
+                    // 双核 IJK / MPV 属 Step 3.1，用户已明确跳过。
 
                     // 画中画：关掉后按 Home 不再缩成小窗，是否继续出声交给「后台播放」开关
                     Row(
