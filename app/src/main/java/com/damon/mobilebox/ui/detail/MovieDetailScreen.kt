@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Cast
@@ -54,11 +53,13 @@ import coil.compose.AsyncImage
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
+import com.damon.mobilebox.ui.components.detailHeroBandBottomFraction
 import com.damon.mobilebox.ui.components.rememberPosterTone
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
 import com.damon.mobilebox.ui.player.VideoDetailData
 import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.player.VideoRoute
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -72,7 +73,9 @@ private val BTextPrimaryDark = Color(0xFFEDF1F7)
 private val BTextSecondaryDark = Color(0xFFA9B2C0)
 /** B 层动态字色：首屏压在深色海报上为白，随整屏变白平滑过渡到近黑 */
 data class BTextColors(val primary: Color, val secondary: Color)
-val LocalBTextColors = staticCompositionLocalOf { BTextColors(BTextPrimary, BTextSecondary) }
+// 用 compositionLocalOf 而不是 staticCompositionLocalOf：滚动时字色每帧都在变，
+// static 版本会让整段 content lambda 全量重组，非 static 只重组真正读取它的节点。
+val LocalBTextColors = compositionLocalOf { BTextColors(BTextPrimary, BTextSecondary) }
 
 /**
  * 沉浸式影视详情页（整页重写）。
@@ -151,9 +154,10 @@ fun MovieDetailScreen(
     // 海报以 ContentScale.Crop 铺满整屏且只裁左右，所以图片纵向比例 == 屏幕纵向比例，
     // 片名所在的屏幕位置可以直接当作图片位置来采样。
     // 条带下沿取 hero 块高度（片名贴其底部对齐），向上覆盖片名 + 元信息两行。
-    val heroFraction = remember(heroHeightPx) {
-        val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-        (heroHeightPx / screenHeightPx.coerceAtLeast(1f)).coerceIn(0.1f, 1f)
+    // 条带下沿与 hero 高度同源：列表卡片预热字色采样时必须算出完全相同的值，
+    // 否则缓存键对不上，预热就白做了（见 PosterTone.detailHeroBandBottomFraction）。
+    val heroFraction = remember(configuration.screenHeightDp) {
+        detailHeroBandBottomFraction(configuration.screenHeightDp.toFloat())
     }
     val posterTone = rememberPosterTone(loadablePosterUrl, bandBottomFraction = heroFraction)
 
@@ -193,13 +197,25 @@ fun MovieDetailScreen(
             )
         )
     }
-    // 页面外壳（返回按钮）比内容更早到位，避免开头几百毫秒"没有退出入口"的错觉
-    val chromeAlpha = remember { Animatable(0f) }
+    // ---- 屏外内容延迟组合（首帧削峰）----
+    // 详情页首帧一次性组合全部 8 组内容（4 个 LazyRow、十余个 Chip、按钮与图标），
+    // 叠加共享元素转场 Overlay 的首次创建，单个组合/测量帧远超一个 vsync：
+    // 实测冷启首次进详情页最慢一帧 150ms，转场中间帧根本没画出来，直接跳到终点。
+    // 首帧只保留首屏可见的前 3 组；后 5 组（演职人员/分类/预告片/剧照/操作行）
+    // 在入场动画全程都位于屏幕之外，等入场跑完再组合 —— 停顿落在画面静止的一帧上。
+    // 注意：不要把这些组再拆成"每帧一组"去摊 —— 每加一组整帧就涨到 30~50ms，
+    // 转场会从"一帧跳到终点"退化成 30fps 的多次跳跃（实测更差）。
+    var offscreenReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        chromeAlpha.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 220, delayMillis = 80, easing = FastOutSlowInEasing)
-        )
+        // 入场跑完后再多等一拍：此时画面已经静止，组合停顿肉眼看不到
+        snapshotFlow { entrance.value }.first { it >= EntranceTotalMs - 0.5f }
+        delay(300)
+        offscreenReady = true
+    }
+    // 用户一上手滚动就立即补齐，保证任何时刻都不会缺内容
+    LaunchedEffect(Unit) {
+        snapshotFlow { scrollState.value }.first { it > 0 }
+        offscreenReady = true
     }
 
     // 状态栏图标：深色海报上用浅色图标，背景转白后切成深色图标。
@@ -429,9 +445,11 @@ fun MovieDetailScreen(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
+                            // ---- 以下 5 组位于首屏之外，等入场跑完再组合（见 offscreenReady）----
+                            if (offscreenReady) {
 
                             // 3. 演职人员（真实数据优先，不足用测试数据补齐，入场第 4 组）
+                            Spacer(modifier = Modifier.height(28.dp))
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -442,9 +460,8 @@ fun MovieDetailScreen(
                                 CastRow(data = finalData)
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
-
                             // 4. 分类（测试数据标签，M3 AssistChip 白底黑字，入场第 5 组）
+                            Spacer(modifier = Modifier.height(28.dp))
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -468,9 +485,8 @@ fun MovieDetailScreen(
                                 TrailerRow()
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
-
                             // 6. 剧照（测试数据占位网格，入场第 7 组）
+                            Spacer(modifier = Modifier.height(28.dp))
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -481,9 +497,8 @@ fun MovieDetailScreen(
                                 StillsPlaceholder()
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
-
                             // 7. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层（入场第 8 组）
+                            Spacer(modifier = Modifier.height(28.dp))
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -503,6 +518,7 @@ fun MovieDetailScreen(
                                 DetailAction(Icons.Default.Cast, "DLNA投屏") { onShowToast("正在搜索局域网电视设备...") }
                                 DetailAction(Icons.Default.Share, "分享") { onShowToast("分享链接已复制至剪贴板") }
                             }
+                            }
 
                             Spacer(modifier = Modifier.height(48.dp))
                         }
@@ -510,40 +526,9 @@ fun MovieDetailScreen(
                     }
                 }
 
-                // 4. 顶部栏：只保留 M3 原生返回按钮。
-                // 片名属于 B 层、随滚动一起移动，顶栏再补一份会出现同屏两个片名。
-                TopAppBar(
-                    title = { },
-                    navigationIcon = {
-                        IconButton(
-                            onClick = {
-                                if (currentPlayingEpisode != null) currentPlayingEpisode = null else onBack()
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(Color.Black.copy(alpha = 0.42f), CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "返回",
-                                tint = Color.White
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        navigationIconContentColor = Color.White
-                    ),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .graphicsLayer {
-                            // 外壳先于内容到位：淡入 + 自上而下 10dp 落下，绘制阶段读取，不重组
-                            val a = chromeAlpha.value
-                            alpha = a
-                            translationY = (1f - a) * -10.dp.toPx()
-                        }
-                )
+                // 4. 顶部不再放可视化返回按钮：Android 有系统返回手势/返回键，
+                // 返回统一由上面的 BackHandler 处理（播放器打开时先关播放器）。
+                // 少一层 M3 TopAppBar 也顺手减掉首次组合与一层离屏绘制。
 
                 // 5. 播放器层
                 currentPlayingEpisode?.let { ep ->

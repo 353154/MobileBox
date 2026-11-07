@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +78,16 @@ fun StandardPosterCard(
     val isParallaxEnabled = LocalParallaxEnabled.current
     val density = LocalDensity.current.density
     val context = LocalContext.current
+
+    // 详情页字色采样的预热通道：卡片图片加载完成后顺手算一次（72x108，走同一份缓存），
+    // 用户点进详情页时首帧就是最终字色。否则采样结果会在共享转场中途返回，
+    // 触发详情页整页重组（数十个 Text 重建段落），实测能卡住一整个组合帧。
+    val configuration = LocalConfiguration.current
+    val prefetchScope = rememberCoroutineScope()
+    val toneBandFraction = remember(configuration.screenHeightDp) {
+        detailHeroBandBottomFraction(configuration.screenHeightDp.toFloat())
+    }
+    val loadablePosterUrl = remember(posterUrl) { posterUrl.toLoadableImageUrl() }
 
     val posterKey = movieId?.trim()?.takeIf { it.isNotEmpty() }?.let { "poster_$it" }
 
@@ -187,9 +198,14 @@ fun StandardPosterCard(
         ) {
             if (posterUrl.isNotEmpty()) {
                 AsyncImage(
-                    model = rememberRetryableImageRequest(context, posterUrl.toLoadableImageUrl()),
+                    model = rememberRetryableImageRequest(context, loadablePosterUrl),
                     contentDescription = title,
                     contentScale = ContentScale.Crop,
+                    onSuccess = {
+                        prefetchScope.launch {
+                            prefetchPosterTone(context, loadablePosterUrl, toneBandFraction)
+                        }
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {

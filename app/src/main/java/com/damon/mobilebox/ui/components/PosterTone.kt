@@ -70,6 +70,47 @@ data class PosterTone(
 private const val SampleWidth = 72
 private const val SampleHeight = 108
 
+/** 文字条带高度占比：覆盖片名 + 元信息两行 */
+private const val DefaultBandHeightFraction = 0.22f
+
+/**
+ * 详情页片名条带下沿在图片高度上的占比。
+ *
+ * 详情页 hero 高度是「0.82 屏高、限制在 420..640dp」，且海报以 Crop 铺满整屏、
+ * 裁掉的是左右，所以图片纵向比例 == 屏幕纵向比例，可以直接用屏幕位置当图片位置。
+ * 列表卡片预热采样与详情页采样必须走同一个函数，否则缓存键（含条带位置）对不上。
+ */
+fun detailHeroBandBottomFraction(screenHeightDp: Float): Float {
+    val safe = screenHeightDp.coerceAtLeast(1f)
+    val heroDp = (safe * 0.82f).coerceIn(420f, 640f)
+    return (heroDp / safe).coerceIn(0.1f, 1f)
+}
+
+/** 缓存键：不同屏幕高度下条带不一样，不能混用 */
+private fun toneCacheKey(url: String, bottom: Float, height: Float): String =
+    "$url#${(bottom * 100).toInt()}_${(height * 100).toInt()}"
+
+/**
+ * 预热采样结果（供列表页在卡片图片加载完成后调用）。
+ *
+ * 详情页首帧就能直接拿到已分析的 tone，不会在共享转场/交错入场动画中途
+ * 突然返回结果触发整页重组 —— 那正是首次进详情页掉帧的主要来源之一。
+ */
+suspend fun prefetchPosterTone(
+    context: Context,
+    url: String,
+    bandBottomFraction: Float,
+    bandHeightFraction: Float = DefaultBandHeightFraction
+) {
+    if (url.isBlank()) return
+    val bottom = bandBottomFraction.coerceIn(0.1f, 1f)
+    val height = bandHeightFraction.coerceIn(0.05f, 0.6f)
+    val key = toneCacheKey(url, bottom, height)
+    if (PosterToneCache.get(key) != null) return
+    val result = analyzePosterTone(context, url, bottom, height) ?: return
+    PosterToneCache.put(key, result)
+}
+
 /** 同一 URL 的采样结果缓存：重新进详情页不会先白后黑地闪一下 */
 private object PosterToneCache {
     private val map = object : LinkedHashMap<String, PosterTone>(24, 0.75f, true) {
@@ -96,13 +137,12 @@ private object PosterToneCache {
 fun rememberPosterTone(
     url: String,
     bandBottomFraction: Float,
-    bandHeightFraction: Float = 0.22f
+    bandHeightFraction: Float = DefaultBandHeightFraction
 ): PosterTone {
     val context = LocalContext.current
     val bottom = bandBottomFraction.coerceIn(0.1f, 1f)
     val height = bandHeightFraction.coerceIn(0.05f, 0.6f)
-    // 缓存键带上条带位置：不同屏幕高度下条带不一样，不能混用
-    val key = remember(url, bottom, height) { "$url#${(bottom * 100).toInt()}_${(height * 100).toInt()}" }
+    val key = remember(url, bottom, height) { toneCacheKey(url, bottom, height) }
 
     var tone by remember(key) {
         mutableStateOf(PosterToneCache.get(key) ?: PosterTone())
