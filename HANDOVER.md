@@ -1,12 +1,12 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.0（详情页重写 · 动效定案 · 数据链路加固交付版）
+> **文档版本**：v3.1（直播多线路 · EPG 换源 · 文档订正版）
 > **更新时间**：2026-11-07
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：35 个 Kotlin 文件，约 9.5k 行
+> **当前规模**：37 个 Kotlin 文件，约 10.1k 行
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
-本文档面向「接手继续开发的人或 Agent」。**第六章（详情页）与第七章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
+本文档面向「接手继续开发的人或 Agent」。**第四章（详情页）与第五章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
 
 ---
 
@@ -17,9 +17,9 @@
 | 维度 | 现状 |
 | :--- | :--- |
 | UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载 |
-| 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化 |
-| 播放 | Media3 ExoPlayer，`PlayerDetailScreen` 全屏播放层，解码器可在设置切换 |
-| 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 |
+| 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化。深色 `background #0D1117` / `surface #161B22`，浅色 `background #F2F2F7` / `surface #FFFFFF`（`AppTheme.kt` 为准，文档旧版写的 `#0E121A` 是错的） |
+| 播放 | **Media3 ExoPlayer 单内核**，`PlayerDetailScreen` 全屏播放层。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十一章已知问题 1），并未真正切换内核 |
+| 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 + 同频道多线路自动切换 |
 | 数据 | 纯客户端直连，无后端；`TvBoxParser` 解析订阅，`TvBoxRepository` 统一状态源 |
 | 依赖注入 | Hilt |
 
@@ -34,7 +34,7 @@
 | `ui/navigation/AppNavigation.kt` | `NavHost` + `SharedTransitionLayout` + detail 路由 | 转场时长统一 280ms；`DisposableEffect` 维护 `SharedPosterTransition.activeKey` |
 | `ui/components/StandardPosterCard.kt` | **全局唯一海报卡片** | 3D 视差 + `sharedBounds` + `parallaxWeight` 抑制，层级结构不可随意调整 |
 | `ui/components/ParallaxEffect.kt` | 陀螺仪角度（相对握持基线）+ 应用级常驻监听 | 见 7.3 |
-| `ui/components/PosterTone.kt` | 海报明暗采样，决定叠在海报上的字色 | 见 6.5 |
+| `ui/components/PosterTone.kt` | 海报明暗采样，决定叠在海报上的字色 | 见第六章 |
 | `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场）** | 全项目最敏感的文件，改之前读第六章 |
 | `ui/components/StandardPullToRefreshBox.kt` | 自研下拉刷新（内容跟手位移） | 不要换成 M3 `PullToRefreshBox` |
 | `ui/components/ImageUrlCompat.kt` | 图片 URL 降级 + 失败重试 | 采集站 CDN 只支持 http |
@@ -42,7 +42,8 @@
 | `ui/components/BingWallpaper.kt` | 5 张 Bing 壁纸缓存 + 轮播 + Ken Burns | 首帧回调后淡出 |
 | `ui/components/NavGlyphIcon.kt` | 5 枚自绘底栏图标（线框/实心双态） | 线宽统一靠这里 |
 | `ui/components/HorizontalScrollFadingEdge.kt` | 横向滚动双向渐隐 | 按可滚方向动态 |
-| `ui/player/*` | 播放器页与数据模型 | 控制按钮用 M3 原生 |
+| `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 | 所有切换相关状态都不能 `remember(streamUrl)`，见 3.1 |
+| `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型 | 控制按钮用 M3 原生；**目前没有任何触摸手势**（亮度/音量/Seek 属于 ROADMAP Step 3.2） |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
 | `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/选中站点） | 幂等初始化，见 8.3 |
 
@@ -52,11 +53,11 @@
 
 - **首页**：双列 2:3 海报网格；下拉刷新内容跟手；程序化加载不显示顶部圈；3D 陀螺仪视差。
 - **分类**：两级 FilterChip（分类/排序）+ 双层缓存（内存 + `TvBoxRepository`），返回 0ms 恢复。
-- **直播**：分组 chips → 频道列表；右侧详情区静音预拉流并实时高斯模糊，加载期 Bing 壁纸轮播；**点播放按钮才开始播放**；EPG 有数据才显示，没有就整行不出现。同一频道配置了多条线路时**自动切换**（见 4.1）。
-- **设置**：主题、色盘、3D 开关、解码器、订阅源管理。开关状态一律走 `StateFlow`（见 7.4）。
+- **直播**：分组 chips → 频道列表；右侧详情区静音预拉流并实时高斯模糊，加载期 Bing 壁纸轮播；**点播放按钮才开始播放**；EPG 有数据才显示，没有就整行不出现。同一频道配置了多条线路时**自动切换**（见 3.1）。
+- **设置**：主题、色盘、3D 开关、订阅源管理。开关状态一律走 `StateFlow`（见 7.4）。
 - **我的**：收藏/在看的指标卡 + 空状态（68dp 紧凑行）。
 
-### 4.1 直播多线路自动切换
+### 3.1 直播多线路自动切换
 `live.txt` / `live.m3u` 里同一个频道通常配了 3 条以上线路，`deduplicateGroups` 会把它们聚合成 `LiveChannel.urls`。播放器按这个顺序当备用源：
 
 - 触发条件三条：`onPlayerError`（还有备用线路就直接跳，不弹错误面板）、**起播超时 9s**（握手成功、播放列表能拉到，但分片永远拉不下来 —— 播放器不报错只转圈，这是免费源最常见的失败形态）、**卡顿超时 12s**（出过画面后长时间停在 buffering）。全部试完才提示「所有线路均不可用（共 N 条）」。
@@ -64,6 +65,7 @@
 - `LiveSourceMemory` 记住每个频道上次播通的线路，下次进同台优先用它，省掉重复超时等待。
 - **状态坑**：`onPlayerError` 注册在 `DisposableEffect(exoPlayer)` 里只注册一次。任何在回调里读写的状态都不能用 `remember(streamUrl)`（换台后对象被重建，回调会写到废弃的 State 上，表现为换台后重试/切换逻辑失灵）。新增状态一律不带 key，换台时用 `LaunchedEffect(streamUrl/activeSourceUrl)` 显式重置。
 - **能力边界**：只能处理「超时 / 卡顿 / 报错」。**「能播但播错台」识别不了** —— 例如源里 `CCTV-1` 三条线路分别指向 `cctv14hd`/`cctv17hd`/`cctv12hd`（2026-11 实测，源方无可用 CCTV-1 用别的台占位），客户端没有依据判断画面内容，要查就去改源。
+- `LiveBlurPreview`（右侧静音模糊预览）**仍只用第一条线路**，不参与切换；换台抽屉的「当前台」判断用的是 `channel.url`，也不受影响。
 
 ---
 
@@ -92,7 +94,7 @@
 铺满首块的黑阶、片名局部暗底、内容面板「透明→白」空间渐变、衔接暗色层、纯白硬切面板、随滚动加深的黑 Scrim、132dp 大留白、浮动按钮。这些都会切出水平硬边或脏灰带。
 
 ### 4.5 字色
-- `LocalBTextColors`（`staticCompositionLocalOf`）提供 `primary/secondary`。
+- `LocalBTextColors`（`MovieDetailScreen.kt`）提供 `primary/secondary`。**必须是 `compositionLocalOf`（动态）而不是 `staticCompositionLocalOf`**：值随滚动每帧变化，静态版本会让所有读取者无条件整页重组；动态版本只重组真正读它的节点。
 - **起点**由海报亮度决定（见 6.5）：深色海报 → 白字；浅色海报 → 近黑字。
 - **终点**跟随主题：`surface.luminance() > 0.5` → `BTextPrimary/BTextSecondary`（近黑/中灰），否则 `BTextPrimaryDark/BTextSecondaryDark`（近白/浅灰）。
 - 中途 `lerp(起点, 终点, veilProgress)`。
@@ -218,7 +220,8 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 | :--- | :--- |
 | `MB-TONE` | 海报明暗采样结果（深/浅字判定） |
 | `MB-IMG` | 图片加载成功/失败与重试次数 |
-| `MB-EPG` | EPG 模板命中、频道命中情况 |
+| `MB-EPG` | EPG 模板候选、全局源覆盖数、频道命中/无节目单 |
+| `MB-LIVE` | 直播自动切换线路：`自动切线路 2/4 (起播超时)`、`全部线路不可用 (...)` |
 | `MB-DETAIL` | 详情页当前海报 URL |
 
 ### 视觉问题排查方法（成本远低于反复改代码试错）
@@ -232,7 +235,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 1. **改完只做 `assembleDebug` + `adb install -r`，然后立即交付**。编译是构建必需，保留。
 2. **部署后不要自测**：不截图、不录屏、不切页自检、不主动找问题。**测试由用户发起**——只有用户说「你自己测试/帮我测试」或用文字描述不清时，才允许操作设备。（设备常被用户同时使用，盲发 tap/swipe 会误触返回键、滑出多任务。）
 3. **Git 门禁**：只有用户明确说「验证通过 / 提交」，才 commit、push、勾 ROADMAP、写 CHANGELOG。
-4. **`/docs/` 与 `/CHANGELOG.md` 是私密内部文档**（`.gitignore` 第 23–24 行），只在本地维护，**绝不 `git add -f` 强推**。提交时用 `git add` 明确列出代码文件，不要 `git add .`。
+4. **`/docs/` 与 `/CHANGELOG.md` 是私密内部文档**（`.gitignore` 第 23–24 行），只在本地维护，**绝不 `git add -f` 强推**。提交时用 `git add` 明确列出代码文件，不要 `git add .`。同理 `/.workbuddy/`（本地工作记忆）也已加入 `.gitignore`，不要入库。
 5. 用户偏好：不喜欢「多余装饰层」。任何背景、渐变、暗底、悬浮按钮都要先问清是否存在，不要叠加补丁。
 
 ---
@@ -240,10 +243,13 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 ## 十一、已知问题与下一步
 
 **已知问题**
-1. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让（注意别切出水平硬边）。
-2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
-3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
+1. **设置页「MPV 高性能解码内核」开关是纯 UI 占位**（`AnimatedMainScreen.kt` 里 `var isMpvKernel by remember { mutableStateOf(true) }`）：不持久化、不接线播放器、不重启保持，文案却会显示「已回退为 IJKPlayer 内核」。实际播放链一直是 Media3 ExoPlayer。要么在 Step 3.1 时把内核切换真正做出来，要么先把开关改回只读的「当前内核：ExoPlayer」。
+2. 详情页内容滚到顶时，「暂无简介 / 播放资源」会钻到状态栏下方（B 层没有顶部安全区避让）。修法：给 B 层首块加与状态栏等高的滚动避让（注意别切出水平硬边）。这是 Step 2.3 唯一剩余项。
+3. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
+4. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
+5. 播放器**没有任何触摸手势**（无亮度/音量/Seek/双击暂停，见 ROADMAP Step 3.2），全屏页只靠底部控制条操作。
 
 **下一步（按 ROADMAP）**
-- Step 2.3 挖孔屏/手势条沉浸式避让
-- Step 3.x 播放器双核解码、全手势、弹幕/PiP、画质增强
+- Step 2.3 收尾：详情页 B 层顶部安全区避让（只剩这一项，阶段二即可全部关闭）
+- Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）
+- Step 3.2 全屏触控手势 → Step 3.3 弹幕/PiP → Step 3.4 画质增强

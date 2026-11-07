@@ -23,3 +23,6 @@ local.properties
 /docs/
 /CHANGELOG.md
 .DS_Store
+
+# 本地工作记忆（WorkBuddy 会话上下文，仅本地保留）
+/.workbuddy/
