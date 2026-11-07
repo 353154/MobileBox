@@ -1,12 +1,21 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.3（阶段二收官 · 全站搜索 · 测试分发版）
+> **文档版本**：v3.4（播放器手势 · 画中画 · 跨站聚合版）
 > **更新时间**：2026-11-07
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：38 个 Kotlin 文件，约 10.5k 行
+> **当前规模**：39 个 Kotlin 文件，约 11.0k 行
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
-本文档面向「接手继续开发的人或 Agent」。**第四章（详情页）与第五章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
+本文档面向「接手继续开发的人或 Agent」。
+
+> **【开工前必做 —— 用户 2026-11-07 明确要求】** 每个接手的 Agent 在**动手改任何代码之前**，必须先向用户**书面汇报**三件事：
+> 1. **你读到的当前进度**——读了哪些文档（本文件、`.workbuddy/memory/MEMORY.md`、当日日志、`docs/REFACTOR_ROADMAP.md`），代码现状与你的理解是否一致；
+> 2. **遗留问题清单**——第十二章「已知问题」里哪些还没解决、哪些是未验收状态、工作区是否有未提交改动（`git status`）；
+> 3. **你打算做什么、不动什么**——让用户有机会纠正方向，再开工。
+>
+> 汇报完等用户确认再动手。不要读完文档直接开干。
+
+**第四章（详情页）与第五章（转场/3D 定案）是踩坑最多的部分，动这两块之前必须先读完**，里面每一条负面清单都是真实回归过的。
 
 ---
 
@@ -18,7 +27,7 @@
 | :--- | :--- |
 | UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载；搜索页与详情页是独立路由 |
 | 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化。深色 `background #0D1117` / `surface #161B22`，浅色 `background #F2F2F7` / `surface #FFFFFF`（`AppTheme.kt` 为准，文档旧版写的 `#0E121A` 是错的） |
-| 播放 | **Media3 ExoPlayer 单内核**，`PlayerDetailScreen` 全屏播放层。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十一章已知问题 1），并未真正切换内核 |
+| 播放 | **Media3 ExoPlayer 单内核**，`PlayerDetailScreen` 全屏播放层；全屏手势（亮度/音量/Seek/双击暂停）+ 画中画 PiP，见第十章。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十二章已知问题 1），并未真正切换内核 |
 | 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 + 同频道多线路自动切换 |
 | 数据 | 纯客户端直连，无后端；`TvBoxParser` 解析订阅，`TvBoxRepository` 统一状态源 |
 | 依赖注入 | Hilt |
@@ -43,8 +52,9 @@
 | `ui/components/BingWallpaper.kt` | 5 张 Bing 壁纸缓存 + 轮播 + Ken Burns | 首帧回调后淡出 |
 | `ui/components/NavGlyphIcon.kt` | 5 枚自绘底栏图标（线框/实心双态） | 线宽统一靠这里 |
 | `ui/components/HorizontalScrollFadingEdge.kt` | 横向滚动双向渐隐 | 按可滚方向动态 |
-| `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 | 所有切换相关状态都不能 `remember(streamUrl)`，见 3.1 |
-| `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型 | 控制按钮用 M3 原生；**目前没有任何触摸手势**（亮度/音量/Seek 属于 ROADMAP Step 3.2） |
+| `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 + 全屏手势 + 手势 HUD | 切换相关状态不能 `remember(streamUrl)`，见 3.1；手势性能结构见 10.1 |
+| `ui/player/PipController.kt` | 画中画状态与参数（playerActive / 画面比例 / visibleRoute 校验） | 见 10.2 |
+| `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型 | 控制按钮用 M3 原生；竖屏 `statusBarsPadding`，PiP 时强制 `fillMaxSize` |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
 | `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/全站搜索/选中站点） | `cacheInitialized` 保证 `initFromCache` 幂等，见 7.2；首启自动订阅见 8.5 |
 
@@ -249,34 +259,79 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 | `MB-LIVE` | 直播自动切换线路：`自动切线路 2/4 (起播超时)`、`全部线路不可用 (...)` |
 | `MB-DETAIL` | 详情页当前海报 URL |
 | `MB-SUB` | 首启使用内置默认订阅、以及内置订阅加载失败 |
+| `MB-PIP` | 画中画：`onUserLeaveHint playerActive=?`、`enterPictureInPictureMode -> bool, ratio=WxH`、`onPipModeChanged(bool)`、`skip: ...` |
+| `MB-XSITE` | 详情页跨站线路聚合：`+N 条线路 / M 个站点` |
 
 ### 视觉问题排查方法（成本远低于反复改代码试错）
 `screenrecord` 录屏 → `ffmpeg` 30fps 抽帧 → 分区逐帧差分（`numpy` 均值差）定位到具体帧 → 裁剪放大拼图看变化形态。
 本项目「返回抖动」就是靠这个把范围锁到 f0386–f0390 的孤立峰值（其余区域≈0），一次定位成功。
 
----
-
-## 十、协作约定（当前维护者的硬性要求）
-
-1. **改完只做 `assembleDebug` + `adb install -r`，然后立即交付**。编译是构建必需，保留。
-2. **部署后不要自测**：不截图、不录屏、不切页自检、不主动找问题。**测试由用户发起**——只有用户说「你自己测试/帮我测试」或用文字描述不清时，才允许操作设备。（设备常被用户同时使用，盲发 tap/swipe 会误触返回键、滑出多任务。）
-3. **Git 门禁**：只有用户明确说「验证通过 / 提交」，才 commit、push、勾 ROADMAP、写 CHANGELOG。
-4. **`/docs/` 与 `/CHANGELOG.md` 是私密内部文档**（`.gitignore` 第 23–24 行），只在本地维护，**绝不 `git add -f` 强推**。提交时用 `git add` 明确列出代码文件，不要 `git add .`。同理 `/.workbuddy/`（本地工作记忆）也已加入 `.gitignore`，不要入库。
-5. 用户偏好：不喜欢「多余装饰层」。任何背景、渐变、暗底、悬浮按钮都要先问清是否存在，不要叠加补丁。
+### adb 界面自动化测试手法（用户授权自测时用）
+- 控件坐标用 `adb shell uiautomator dump /sdcard/ui.xml` + 解析 `bounds` 中心，**不要按截图比例换算**（Vision 模型返回的是缩放坐标，实测两次都点偏，dump 一次精确）。
+- 设备 1216x2640 / density 476，截图与屏幕 1:1。
+- **发现用户正在用手机（弹窗、侧边栏、内容异常）立即停手**，不要继续发 tap/swipe。
 
 ---
 
-## 十一、已知问题与下一步
+## 十、播放器：全屏手势与画中画（2026-11-07 新增）
+
+### 10.1 全屏手势（Step 3.2）
+- 左半屏上下滑 → 屏幕亮度（改 `window.attributes.screenBrightness`，clamp 0.02~1；起点为 -1 跟随系统时先读 `Settings.System.SCREEN_BRIGHTNESS`，否则第一次下滑从 0 跳）。
+- 右半屏上下滑 → 媒体音量（`AudioManager.STREAM_MUSIC`，与物理音量键同步）。
+- 横滑 → 进度预览，**松手才 `seekTo`**（拖动中反复 seek 会疯狂起播）；灵敏度 = 滑满整屏 ≈ 时长一半，`coerceAtLeast(30s)` 兜底短片；**直播/时长未知不响应横滑**。
+- 双击 → 暂停/继续。
+- 方向判定：`detectDragGestures` 里自累积 `accX/accY`，超 `touchSlop` 才锁定垂直/水平，避免「想调亮度先把画面拖歪」。
+- **性能关键（别再糊回去）**：提示内容与显隐拆两个 state —— `hudContent: MutableState<GestureHint?>` 只在 `GestureHud` 内部读取（`content.value ?: return`），`hintVisible: Boolean` 只在开始/结束变。拖动中每帧只重组胶囊；若合成一个 state，每帧重组这个 1000 行的播放器 composable。拖动会话放普通类 `GestureSession`（非 Compose state）同理。
+- 手势开始即 `areControlsVisible = false`（否则 HUD 与中央大播放按钮重叠）；另加 watchdog：`hintVisible && !dragging && 1.2s 无更新` 强制收起——两个 `pointerInput` 的收尾回调偶发丢失会让 HUD 永久挂住。
+- **已知取舍**：加 `onDoubleTap` 后单击切控制栏有约 300ms 等待（Compose `detectTapGestures` 等双击判定超时）。若用户嫌钝，改手写 tap 检测（单击立即响应，双击撤销上一次切换），代价是双击瞬间控制栏闪一下。
+
+### 10.2 画中画 PiP（Step 3.3 前半）
+- 单 Activity 架构：进 PiP = 整个窗口缩小。详情页播放器层本就 `fillMaxSize + zIndex(10f)` 盖在最上，PiP 时隐藏选集面板、强制播放器 `fillMaxSize`，小窗里自然只剩画面。
+- `PipController`（object）：`isInPip`（Compose state）/ `playerActive`（`MobileVideoPlayer` 的 `DisposableEffect` 维护，播放器销毁立即置 false）/ `visibleRoute`（`AppNavigation` 用 `currentBackStackEntryAsState` 上报）。
+- **进 PiP 硬校验**：`playerActive && visibleRoute.startsWith("detail")`。路由校验是为了挡住 NavHost 280ms 退出转场期 `playerActive` 残留导致的「首页被缩进小窗」（用户截图实锤过这个现象，正常路径复现不出来，只有转场窗口能解释）。
+- 画面比例来自 `onVideoSizeChanged`（乘 `pixelWidthHeightRatio`），`Rational` 必须钳制 0.42~2.39，超范围直接抛异常。
+- `MainActivity.onUserLeaveHint` 里 `tryEnterPip()`；Manifest 已加 `supportsPictureInPicture` + `resizeableActivity`。
+- PiP 中强关控制条/换台抽屉/手势提示，`onTap/onDoubleTap/onDrag` 全部 `isInPip` 短路，触摸交系统（放大/关闭）。
+- **已知风险**：Manifest `screenOrientation="portrait"` 锁方向，部分 ROM 可能拒绝进 PiP（实测 ColorOS 17 正常）。若其它机型进不去：进 PiP 前临时 `requestedOrientation = UNSPECIFIED`、退出还原（会有一次方向跳变，慎用）。
+- **弹幕（Step 3.3 后半）未做**：TVBox 采集站不提供弹幕数据，要做先定数据源。
+
+### 10.3 详情页跨站线路聚合
+- `TvBoxRepository.searchCrossSiteRoutes(keyword, excludeSiteKey)`：并发查所有 `searchable` 站（6s 超时），**只留片名精确同名**的条目（模糊命中会把「第二季」「剧场版」混进线路列表）。
+- 详情页 `mergedData` state + `LaunchedEffect(finalData)` 异步聚合，**不阻塞首屏**：先显示当前站线路，查到再追加 chips；`routeName` 前缀站名、`routeId` 前缀站 key，下游 `PlayerDetailScreen` 零改动。
+- **切线路必须重置集数**：`selectedEpisodeId` 的 remember key 含 `selectedRouteIndex`（各站集数/编号可能完全不同）。
+- 线路 chips 已改 `LazyRow`（原来是普通 `Row`，超屏宽的 chip 直接被裁掉）。
+- 日志 `MB-XSITE: +N 条线路 / M 个站点`；查不到同名就静默跳过。
+- 注意：线路名 FEIFAN/FFM3U8 等是上游 `vod_play_from` 标识，**不代表站点**。
+
+---
+
+## 十一、协作约定（当前维护者的硬性要求）
+
+1. **开工前先汇报**（见文首【开工前必做】）：读到的进度、遗留问题、打算做什么，汇报完等用户确认再动手。
+2. **改完只做 `assembleDebug` + `adb install -r`，然后立即交付**。编译是构建必需，保留。
+3. **部署后不要自测**：不截图、不录屏、不切页自检、不主动找问题。**测试由用户发起**——只有用户说「你自己测试/帮我测试」或用文字描述不清时，才允许操作设备。（设备常被用户同时使用，盲发 tap/swipe 会误触返回键、滑出多任务。）
+4. **Git 门禁**：只有用户明确说「验证通过 / 提交」，才 commit、push、勾 ROADMAP、写 CHANGELOG。
+5. **`/docs/` 与 `/CHANGELOG.md` 是私密内部文档**（`.gitignore` 第 23–24 行），只在本地维护，**绝不 `git add -f` 强推**。提交时用 `git add` 明确列出代码文件，不要 `git add .`。同理 `/.workbuddy/`（本地工作记忆）也已加入 `.gitignore`，不要入库。
+6. 用户偏好：不喜欢「多余装饰层」。任何背景、渐变、暗底、悬浮按钮都要先问清是否存在，不要叠加补丁。
+
+---
+
+## 十二、已知问题与下一步
 
 **已知问题**
 1. **设置页「MPV 高性能解码内核」开关是纯 UI 占位**（`AnimatedMainScreen.kt` 里 `var isMpvKernel by remember { mutableStateOf(true) }`）：不持久化、不接线播放器、不重启保持，文案却会显示「已回退为 IJKPlayer 内核」。实际播放链一直是 Media3 ExoPlayer。要么在 Step 3.1 时把内核切换真正做出来，要么先把开关改回只读的「当前内核：ExoPlayer」。
 2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
 3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
-4. 播放器**没有任何触摸手势**（无亮度/音量/Seek/双击暂停，见 ROADMAP Step 3.2），全屏页只靠底部控制条操作。
+4. **手势单击有 ~300ms 延迟**（`onDoubleTap` 的 Compose 固有行为，见 10.1）。用户未表态是否接受，嫌钝就改手写 tap 检测。
+5. **PiP 与手势、跨站聚合均未经用户在真机上逐条验收**（2026-11-07 提交时用户要求跳过手势测试直接做下一项；PiP 由 Agent 自测通过：进/出小窗无 Activity 重建、画面正常、比例正确）。跨站聚合的「点击切换跨站线路」一项未实测（测试中途用户开始用手机，停止操作）。
+6. 首页部分海报偶发灰底不显示（图片 CDN 问题，查 `MB-IMG`）。
+7. 源数据问题（非 App 缺陷，改不了客户端）：FEIFAN 线路对部分剧集报「媒体流编码格式无法识别」，切 FFM3U8 或跨站线路可播。
 
 > 详情页 B 层顶部安全区已于 2026-11-07 修复并验收（Step 2.3），见 4.3。
 
 **下一步（按 ROADMAP）**
 - **阶段二已全部关闭**（Step 2.1 / 2.2 / 2.3 / 2.4 均验收通过）
+- **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合已实现并提交（9cd1385、46191c7），等用户验收后勾 ROADMAP**
 - Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）
+- Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）
 - Step 3.2 全屏触控手势 → Step 3.3 弹幕/PiP → Step 3.4 画质增强
