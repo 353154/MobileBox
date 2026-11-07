@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -60,10 +61,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
+import com.damon.mobilebox.data.tmdb.TmdbMeta
+import com.damon.mobilebox.data.tmdb.TmdbRepository
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.watch.FavoriteItem
 import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.ui.components.AmbientBackdrop
+import com.damon.mobilebox.ui.components.StandardDialog
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
 import com.damon.mobilebox.ui.components.detailHeroBandBottomFraction
@@ -78,6 +82,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.ui.input.pointer.pointerInput
+import com.damon.mobilebox.data.tmdb.TmdbPerson
 
 private val HeroScrim = Color(0xFF080B12)
 // B 层统一字色：整屏会随滚动变白，深色文字才可读；不跟随 MaterialTheme 的灰阶/主题蓝
@@ -175,9 +184,65 @@ fun MovieDetailScreen(
             )
         }
     }
-    val effectivePosterUrl = remember(posterUrl, finalData.posterUrl) {
-        if (posterUrl.isNotEmpty()) posterUrl else finalData.posterUrl
+    // ---- TMDB 元数据增强（异步，不阻塞首屏）----
+    // 订阅源数据先渲染，刮削结果回来只替换对应字段；失败就保持原样，不弹错误也不显示空态。
+    // 电影/剧集共用同一条路径，类型由分类名与副标题推断（见 TmdbMatcher.guessType）。
+    var tmdbMeta by remember(movieId) { mutableStateOf<TmdbMeta?>(null) }
+    LaunchedEffect(movieId, finalData.title) {
+        tmdbMeta = null
+        if (finalData.title.isBlank()) return@LaunchedEffect
+        tmdbMeta = TmdbRepository.enrich(
+            title = finalData.title,
+            yearText = finalData.year,
+            typeHint = finalData.category,
+            subtitle = finalData.subtitle
+        )
     }
+
+    // TMDB 优先（海报除外）。上一版是「源数据优先」，结果源里只要有评分和简介，刮削就完全
+    // 看不出效果 —— 采集源的评分多是随手填的，简介里还常带站点广告，用 TMDB 覆盖反而更好。
+    // 海报保留源站：国内源是中文竖版，比 TMDB 的英文海报更贴合这一部。
+    val enriched = remember(finalData, tmdbMeta) {
+        val meta = tmdbMeta ?: return@remember finalData
+        finalData.copy(
+            // 票数太少时分数没有代表性：TMDB 上 1~2 票刷出的 10.0 会把源评分顶掉，
+            // 用户反而觉得刮坏了。低于 10 票一律不采信，保留源评分。
+            rating = meta.voteAverage.takeIf { it > 0.0 && meta.voteCount >= 10 }
+                ?.let { "%.1f".format(it) } ?: finalData.rating,
+            year = meta.year.takeIf { it.isNotBlank() } ?: finalData.year,
+            category = finalData.category.takeIf { it.isNotBlank() && it != "影视" }
+                ?: meta.genres.firstOrNull().orEmpty(),
+            description = meta.overview.takeIf { it.isNotBlank() } ?: finalData.description,
+            // TMDB 类型排前面：它是标准分类（科幻/恐怖/动作），比源站的运营标签更值得先看到。
+            // 去重不能只靠字符串相等：源写「科幻片」、TMDB 写「科幻」，两者会并排出现，
+            // 所以互相包含也算重复。
+            tags = buildList<String> {
+                meta.genres.forEach { genre ->
+                    if (none { it.contains(genre) || genre.contains(it) }) add(genre)
+                }
+                finalData.tags.forEach { tag ->
+                    if (none { it.contains(tag) || tag.contains(it) }) add(tag)
+                }
+            }.take(6),
+            posterUrl = finalData.posterUrl.takeIf { it.isNotBlank() } ?: meta.posterUrl
+        )
+    }
+    val effectivePosterUrl = remember(posterUrl, enriched.posterUrl) {
+        if (posterUrl.isNotEmpty()) posterUrl else enriched.posterUrl
+    }
+
+    // 剧照只在真的刮到时才出现。没有数据就整块隐藏 ——
+    // 成品页里留一条「测试数据占位」比少一个区块更难解释。
+    // 预告片已按用户要求整体去掉（TMDB 只返回 YouTube 链接，国内是 SNI 阻断，
+    // 点了打不开；与其留一排点了没反应的卡片，不如只保留能直连出图的剧照）。
+    val stills = tmdbMeta?.stills.orEmpty()
+    // 剧照查看器：null = 关闭；非 null 表示「从第几张打开」，进全屏 HorizontalPager。
+    var stillViewerStart by remember { mutableStateOf<Int?>(null) }
+    // 简介正文只排 3 行，长简介必然被截断。点一下弹完整介绍，别让用户对着省略号猜。
+    // 简介不再兜底假剧情：刮不到就整块不显示。编一段「病毒爆发后的城市」看着完整，
+    // 但那是在给用户喂错信息，比少一段更糟。
+    val descriptionText = enriched.description.trim()
+    var showFullDescription by remember { mutableStateOf(false) }
     val loadablePosterUrl = effectivePosterUrl.toLoadableImageUrl()
     LaunchedEffect(loadablePosterUrl) {
         android.util.Log.d("MB-DETAIL", "poster=$loadablePosterUrl")
@@ -835,7 +900,7 @@ fun MovieDetailScreen(
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                             HeroMetaRow(
-                                data = finalData,
+                                data = enriched,
                                 route = currentRoute,
                                 textColor = heroTextColor,
                                 subTextColor = heroSubTextColor
@@ -900,32 +965,29 @@ fun MovieDetailScreen(
                                     )
                                     Spacer(modifier = Modifier.height(16.dp))
                                 }
-                                Spacer(modifier = Modifier.height(20.dp))
-                                // 简介照旧保留，只是排在选集/播放源之后
-                                Text(
-                                    text = finalData.description.ifBlank { TestDescription },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = LocalBTextColors.current.primary,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                if (descriptionText.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(20.dp))
+                                    // 简介照旧保留，只是排在选集/播放源之后
+                                    DescriptionText(
+                                        text = descriptionText,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        onExpand = { showFullDescription = true }
+                                    )
+                                }
                             } else {
 
-                            // 1. 简介（居中，2 行）
-                            Text(
-                                text = finalData.description.ifBlank { TestDescription },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = LocalBTextColors.current.primary,
-                                textAlign = TextAlign.Center,
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .entranceMotion(entranceClock, order = 1)
-                            )
-                            Spacer(modifier = Modifier.height(28.dp))
+                            // 1. 简介（居中，3 行；超出可点开全文）。没有简介就整块不出现，
+                            //    order = 1 的空槽保留，不动后面的入场时间轴。
+                            if (descriptionText.isNotBlank()) {
+                                DescriptionText(
+                                    text = descriptionText,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .entranceMotion(entranceClock, order = 1),
+                                    onExpand = { showFullDescription = true }
+                                )
+                                Spacer(modifier = Modifier.height(28.dp))
+                            }
 
                             // 2. 播放资源：M3 原生按钮 + 选集 / 线路（入场第 3 组）
                             Column(
@@ -1015,7 +1077,7 @@ fun MovieDetailScreen(
                             // ---- 以下 5 组位于首屏之外，等入场跑完再组合（见 offscreenReady）----
                             if (offscreenReady) {
 
-                            // 3. 演职人员（真实数据优先，不足用测试数据补齐，入场第 4 组）
+                            // 3. 演职人员（TMDB credits：导演在前 + 演员带头像，入场第 4 组）
                             Spacer(modifier = Modifier.height(28.dp))
                             Column(
                                 modifier = Modifier
@@ -1024,47 +1086,49 @@ fun MovieDetailScreen(
                             ) {
                                 SectionTitle("演职人员")
                                 Spacer(modifier = Modifier.height(12.dp))
-                                CastRow(data = finalData)
+                                CastRow(data = finalData, cast = tmdbMeta?.cast.orEmpty())
                             }
 
-                            // 4. 分类（测试数据标签，M3 AssistChip 白底黑字，入场第 5 组）
+                            // 4. 分类（M3 AssistChip 白底黑字，入场第 5 组）。标签为空整块隐藏，
+                            //    不再拿「恐怖/科幻/冒险」这类假标签凑数。
+                            if (enriched.tags.any { it.isNotBlank() }) {
+                                Spacer(modifier = Modifier.height(28.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .entranceMotion(entranceClock, order = 4)
+                                ) {
+                                    SectionTitle("分类")
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    TagChips(tags = enriched.tags)
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(28.dp))
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .entranceMotion(entranceClock, order = 4)
-                            ) {
-                                SectionTitle("分类")
-                                Spacer(modifier = Modifier.height(12.dp))
-                                TagChips(tags = finalData.tags)
+
+                            // 5. 剧照：TMDB backdrops 全量横滑，点任意一张进全屏查看器
+                            //    （入场 order = 6；order 5 空着 —— 原来那是预告片那一组，
+                            //    删掉后不重排，免得动到整条入场时间轴）
+                            if (stills.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(28.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .entranceMotion(entranceClock, order = 6)
+                                ) {
+                                    SectionTitle("剧照") {
+                                        Text(
+                                            text = "${stills.size} 张",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = LocalBTextColors.current.secondary
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    StillsRow(stills) { index -> stillViewerStart = index }
+                                }
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
-
-                            // 5. 预告片（测试数据占位卡，入场第 6 组）
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .entranceMotion(entranceClock, order = 5)
-                            ) {
-                                SectionTitle("预告片")
-                                Spacer(modifier = Modifier.height(12.dp))
-                                TrailerRow()
-                            }
-
-                            // 6. 剧照（测试数据占位网格，入场第 7 组）
-                            Spacer(modifier = Modifier.height(28.dp))
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .entranceMotion(entranceClock, order = 6)
-                            ) {
-                                SectionTitle("剧照")
-                                Spacer(modifier = Modifier.height(12.dp))
-                                StillsPlaceholder()
-                            }
-
-                            // 7. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层（入场第 8 组）
+                            // 6. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层（入场 order = 7）
                             Spacer(modifier = Modifier.height(28.dp))
                             Row(
                                 modifier = Modifier
@@ -1084,6 +1148,23 @@ fun MovieDetailScreen(
                     }
                 }
 
+                // 剧照查看器：盖在整页最上层（含原地播放层之上），全屏黑底 + 左右滑动。
+                stillViewerStart?.let { start ->
+                    StillViewer(
+                        urls = stills,
+                        startIndex = start,
+                        onClose = { stillViewerStart = null }
+                    )
+                }
+
+                // 简介全文弹窗：正文 3 行放不下时才允许点开，见 DescriptionText
+                if (showFullDescription) {
+                    FullDescriptionDialog(
+                        text = descriptionText,
+                        onDismiss = { showFullDescription = false }
+                    )
+                }
+
                 // 4. 顶部不再放可视化返回按钮：Android 有系统返回手势/返回键，
                 // 返回统一由上面的 BackHandler 处理（播放器打开时先关播放器）。
                 // 少一层 M3 TopAppBar 也顺手减掉首次组合与一层离屏绘制。
@@ -1095,16 +1176,6 @@ fun MovieDetailScreen(
     }
 }
 
-// ---------- 测试数据占位（后续接入刮削后替换，勿当真实数据使用） ----------
-private const val TestDescription = "本片讲述一座城市在病毒爆发后陷入失控，幸存者必须在封锁区中寻找出路。剧情紧凑、节奏明快，是今年最受关注的惊悚作品之一。"
-private val TestCast = listOf(
-    "扎克·克雷格" to "导演",
-    "奥斯汀·艾布拉姆斯" to "Bryan",
-    "保罗·沃尔特·豪瑟" to "Paul",
-    "卡莉·瑞斯" to "Maxine",
-    "扎克·切利" to "Carl"
-)
-private val TestTags = listOf("恐怖", "科幻", "冒险")
 // 演职人员无照片时的缺省头像底色：低饱和莫兰迪色系，按姓名 hash 稳定分配
 private val MorandiPalette = listOf(
     Color(0xFF9FA8A3),
@@ -1121,7 +1192,6 @@ private fun avatarColor(name: String): Color {
     val idx = (name.hashCode() % size + size) % size
     return MorandiPalette[idx]
 }
-private val TestTrailers = listOf("Official Trailer", "Official Teaser", "幕后花絮")
 /** Hero 元信息：年份 / 分类 / 集数 / 评分，颜色随白遮罩进度由白变黑 */
 @Composable
 private fun HeroMetaRow(
@@ -1248,74 +1318,202 @@ private fun DetailAction(icon: ImageVector, label: String, active: Boolean = fal
     }
 }
 
-/** 预告片横向卡片：测试数据占位，带居中播放三角 */
+/**
+ * 剧照横滑：一行卡片，点任意一张进全屏查看器。
+ *
+ * 不裁数量：TMDB 一部片通常给 10~30 张横版剧照，全部铺在横滑里比「只显示 3 张」有用得多，
+ * 也让「看图」这个动作有明确入口（以前三张缩略图点了没反应）。
+ */
 @Composable
-private fun TrailerRow() {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        items(TestTrailers) { title ->
-            Column(modifier = Modifier.width(220.dp)) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(124.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF2A2F3A)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(title, color = LocalBTextColors.current.primary, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-            }
-        }
-    }
-    Spacer(modifier = Modifier.height(6.dp))
-    Text("测试数据占位，后续接入刮削",
-        style = MaterialTheme.typography.labelSmall, color = LocalBTextColors.current.secondary)
-}
-
-/** 剧照网格：测试数据占位 */
-@Composable
-private fun StillsPlaceholder() {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        listOf(Color(0xFFDDE1E9), Color(0xFFCFD5E0), Color(0xFFE4E7EE)).forEach { tint ->
-            Box(
+private fun StillsRow(stills: List<String>, onOpen: (Int) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        itemsIndexed(stills, key = { index, url -> "$index|$url" }) { index, url ->
+            AsyncImage(
+                model = url,
+                contentDescription = "剧照 ${index + 1}",
+                contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .weight(1f)
-                    .height(96.dp)
+                    .width(200.dp)
+                    .height(112.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(tint)
+                    .background(Color(0xFFCFD5E0))
+                    .clickable { onOpen(index) }
             )
         }
     }
 }
 
-/** 演职人员：真实姓名优先，不足用测试数据补齐；圆形头像 + 黑字姓名 + 深灰角色 */
+/**
+ * 全屏剧照查看器。
+ *
+ * 黑底 + `HorizontalPager` 左右滑；点任意处或返回键关闭。
+ * 不做缩放：竖屏宽度只有 400dp 左右，横版剧照用 `Fit` 已经看得很清楚，
+ * 真要看细节可以点开系统图库（这里刻意不接管分享/下载）。
+ */
 @Composable
-private fun CastRow(data: VideoDetailData) {
-    val members = remember(data.director, data.actor) {
-        val real = buildList {
-            data.director.split(',', '/', '，', '、', ' ')
-                .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(it to "导演") }
-            data.actor.split(',', '/', '，', '、', ' ')
-                .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(it to "演员") }
+private fun StillViewer(
+    urls: List<String>,
+    startIndex: Int,
+    onClose: () -> Unit
+) {
+    if (urls.isEmpty()) return
+    val pagerState = rememberPagerState(
+        initialPage = startIndex.coerceIn(0, urls.lastIndex),
+        pageCount = { urls.size }
+    )
+    // 后注册的 BackHandler 先拿到事件：查看器开着时返回键只关查看器，不退出详情页。
+    BackHandler { onClose() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // 必须全黑不透明：半透明时下面的「播放资源 / 演职人员」会透上来，
+            // 看图时非常脏（实测 0xF2 黑底仍能明显看到整页内容）。
+            .background(Color.Black)
+            .pointerInput(Unit) { detectTapGestures { onClose() } }
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            pageSpacing = 8.dp
+        ) { page ->
+            AsyncImage(
+                model = urls[page],
+                contentDescription = "剧照 ${page + 1} / ${urls.size}",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
         }
-        (real + TestCast).distinctBy { it.first }.take(5)
+        Text(
+            text = "${pagerState.currentPage + 1} / ${urls.size}",
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 12.dp)
+        )
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 4.dp, end = 4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "关闭",
+                tint = Color.White
+            )
+        }
     }
+}
+
+/**
+ * 简介正文：固定 3 行，超出才给「查看全文」。
+ *
+ * 之所以用 `hasVisualOverflow` 而不是按字符串长度猜：中英混排、不同字号、横竖屏换行点都不同，
+ * 只有排版结果知道到底有没有被截。没被截断时整段不可点 —— 免得用户点了没反应。
+ */
+@Composable
+private fun DescriptionText(
+    text: String,
+    modifier: Modifier = Modifier,
+    onExpand: () -> Unit
+) {
+    var overflow by remember(text) { mutableStateOf(false) }
+    Column(modifier = modifier) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = LocalBTextColors.current.primary,
+            textAlign = TextAlign.Center,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { overflow = it.hasVisualOverflow },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = overflow, onClick = onExpand)
+        )
+        if (overflow) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "查看全文",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onExpand)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+/** 完整简介：统一弹窗容器，内容长时可滚（StandardDialog 自带 verticalScroll）。 */
+@Composable
+private fun FullDescriptionDialog(text: String, onDismiss: () -> Unit) {
+    StandardDialog(onDismissRequest = onDismiss) {
+        Text(
+            text = "影片简介",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            lineHeight = 22.sp
+        )
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss) {
+                Text("关闭", fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+/**
+ * 演职人员：TMDB credits 优先（导演/主创在前，演员按戏份，带头像与角色名）。
+ *
+ * 刮不到 TMDB 时才退回订阅源里的 director / actor 字段 —— 只显示真实值，
+ * 不再用假名字补齐：以前那 5 个假人名会让人以为数据是对的。
+ */
+@Composable
+private fun CastRow(data: VideoDetailData, cast: List<TmdbPerson>) {
+    val members: List<Triple<String, String, String>> = remember(data.director, data.actor, cast) {
+        if (cast.isNotEmpty()) {
+            cast.map { Triple(it.name, it.role, it.profileUrl) }
+        } else {
+            buildList {
+                data.director.split(',', '/', '，', '、', ' ')
+                    .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(Triple(it, "导演", "")) }
+                data.actor.split(',', '/', '，', '、', ' ')
+                    .map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(Triple(it, "演员", "")) }
+            }.distinctBy { it.first }.take(12)
+        }
+    }
+    if (members.isEmpty()) return
     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        items(members) { (name, role) ->
+        items(members) { (name, role, avatar) ->
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(68.dp)) {
-                Surface(
-                    color = avatarColor(name),
-                    shape = CircleShape,
-                    modifier = Modifier.size(54.dp)
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(CircleShape)
+                        .background(avatarColor(name)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    if (avatar.isNotBlank()) {
+                        AsyncImage(
+                            model = avatar,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
                         Text(
                             text = name.take(1),
                             style = MaterialTheme.typography.titleLarge,
@@ -1424,9 +1622,7 @@ private fun RouteChips(routes: List<VideoRoute>, selectedIndex: Int, onSelect: (
 /** 分类标签：与选集/线路同一套中性取色 */
 @Composable
 private fun TagChips(tags: List<String>) {
-    val clean = remember(tags) {
-        (tags.filter { it.isNotBlank() } + TestTags).distinct().take(5)
-    }
+    val clean = remember(tags) { tags.filter { it.isNotBlank() }.distinct().take(5) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         clean.forEach { tag ->
             NeutralChip(text = tag, selected = false, onClick = {})

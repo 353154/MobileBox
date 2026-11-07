@@ -2,6 +2,7 @@ package com.damon.mobilebox
 
 import android.app.Application
 import android.util.Log
+import com.damon.mobilebox.data.tmdb.TmdbRepository
 import com.damon.mobilebox.data.watch.PlaybackSettings
 import com.damon.mobilebox.data.watch.WatchStore
 import com.damon.mobilebox.data.watch.WebDavConfig
@@ -26,6 +27,8 @@ class MobileBoxApp : Application() {
         PlaybackSettings.init(this)
         // WebDAV 同步配置：设置页与网络层都要读，同样在页面组合前起好
         WebDavConfig.init(this)
+        // TMDB 刮削：本地缓存要在详情页首次请求前就绪（凭据已编进 TmdbConfig，无需配置）
+        TmdbRepository.init(this)
         Log.i(TAG, "MobileBoxApp 初始化成功，Hilt 依赖注入容器已就绪")
     }
 }

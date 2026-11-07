@@ -115,15 +115,28 @@ private class LiveWatchSession {
 @Composable
 fun AnimatedMainScreen(
     themeManager: ThemeManager,
+    initialPage: Int = 0,
+    onPageChanged: (Int) -> Unit = {},
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     onNavigateToDetail: (VideoDetailData) -> Unit = {},
     onNavigateToSearch: () -> Unit = {},
     onNavigateToWatchList: (WatchListType) -> Unit = {}
 ) {
-    val pagerState = rememberPagerState(pageCount = { 5 })
+    val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // 从详情页 / 观影列表返回时，home 会被 NavHost 重新组合，`rememberPagerState` 自带的
+    // saveable 恢复并不总能命中，实测会落回第 0 页（首页）。这里以上层保存的 Tab 为准
+    // 显式对齐一次，保证「在哪个 Tab 进详情，就回到哪个 Tab」。
+    LaunchedEffect(Unit) {
+        if (pagerState.currentPage != initialPage) pagerState.scrollToPage(initialPage)
+    }
+    // 反向同步：用户点底部导航切 Tab 时，把当前页写给上层保存。
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { onPageChanged(it) }
+    }
 
     // 当前激活的 TVBox 站点状态 (从 TvBoxRepository 实时订阅与响应)
     val selectedSite by TvBoxRepository.selectedSite.collectAsState()
@@ -1546,6 +1559,12 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
                     )
                 }
             }
+        // TMDB 条款硬性要求：使用了 API 就必须展示这句声明，且不得暗示官方背书。
+        Text(
+            text = "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 10.sp
+        )
         Row(modifier = Modifier.align(Alignment.End)) {
             TextButton(onClick = onDismiss) {
                 Text("确定", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
