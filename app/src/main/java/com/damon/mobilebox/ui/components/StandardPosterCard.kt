@@ -11,8 +11,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -196,6 +194,12 @@ fun StandardPosterCard(
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
+            // 占位图垫底：采集源没给海报、或给的地址挂了，都不会留一块灰板。
+            // 按条目 id 稳定挑图，同一张卡不会在滚动中换图。
+            PosterPlaceholder(
+                seed = movieId ?: title,
+                modifier = Modifier.fillMaxSize()
+            )
             if (posterUrl.isNotEmpty()) {
                 AsyncImage(
                     model = rememberRetryableImageRequest(context, loadablePosterUrl),
@@ -207,15 +211,6 @@ fun StandardPosterCard(
                         }
                     },
                     modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                    modifier = Modifier
-                        .size(48.dp)
-                        .align(Alignment.Center)
                 )
             }
 

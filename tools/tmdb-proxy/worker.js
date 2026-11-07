@@ -83,6 +83,8 @@ const ALLOWED_PATHS = [
   /^\/3\/(movie|tv)\/\d+$/,
   /^\/3\/(movie|tv)\/\d+\/(credits|images|videos|similar|recommendations)$/,
   /^\/3\/genre\/(movie|tv)\/list$/,
+  // 分类页：按类型拉片单（with_genres）。只放行 discover 本体，参数由 App 决定。
+  /^\/3\/discover\/(movie|tv)$/,
 ];
 
 const PER_IP_PER_MIN = 60;

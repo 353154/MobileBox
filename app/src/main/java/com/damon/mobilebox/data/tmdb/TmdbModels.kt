@@ -136,6 +136,11 @@ internal data class TmdbGenre(
     val name: String? = null
 )
 
+/** `/3/genre/{movie|tv}/list` 的响应。分类页的类型表入口。 */
+internal data class TmdbGenreListResponse(
+    val genres: List<TmdbGenre>? = null
+)
+
 /**
  * TMDB 的**剧集**类型有一部分没有中文译名（实测《伟大的长征》返回 `War & Politics`，
  * 《蜘蛛侠》剧集返回 `Sci-Fi & Fantasy`），会直接漏到「分类」标签里。

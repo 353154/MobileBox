@@ -97,6 +97,8 @@ import com.damon.mobilebox.ui.components.BingWallpaperBackdrop
 import com.damon.mobilebox.ui.components.BingWallpaperStore
 import com.damon.mobilebox.ui.components.GlassControlButton
 import com.damon.mobilebox.ui.category.CategoryScreen
+import com.damon.mobilebox.ui.category.SourceCategoryScreen
+import com.damon.mobilebox.ui.category.TmdbCategoryScreen
 import com.damon.mobilebox.ui.profile.ProfileScreen
 import com.damon.mobilebox.ui.profile.WatchListType
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
@@ -279,16 +281,36 @@ fun AnimatedMainScreen(
                                 ) {
                                     when (page) {
                                         1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                                            CategoryScreen(
-                                                onMovieClick = { detail ->
-                                                    TvBoxRepository.selectedDetail = detail
-                                                    onNavigateToDetail(detail)
-                                                },
-                                                onShowToast = { toastMessage = it },
-                                                onSearchClick = onNavigateToSearch,
-                                                sharedTransitionScope = sharedTransitionScope,
-                                                animatedVisibilityScope = animatedVisibilityScope
-                                            )
+                                            // 分类页：默认走采集源版（行 = 数据源真实分类，
+                                            // 左上角标题可切换数据源）。TMDB 版与旧网格版都还在，
+                                            // 翻下面的 CategoryVariant 即可切回。
+                                            when (CategoryVariant) {
+                                                0 -> SourceCategoryScreen(
+                                                    onMovieClick = { detail ->
+                                                        TvBoxRepository.selectedDetail = detail
+                                                        onNavigateToDetail(detail)
+                                                    },
+                                                    onSearchClick = onNavigateToSearch,
+                                                    onConfigureSource = { showSourceDialog = true },
+                                                    onShowToast = { toastMessage = it }
+                                                )
+                                                1 -> TmdbCategoryScreen(
+                                                    onEntryClick = { meta ->
+                                                        onNavigateToTmdbDetail(meta)
+                                                    },
+                                                    onSearchClick = onNavigateToSearch
+                                                )
+                                                else -> CategoryScreen(
+                                                    onMovieClick = { detail ->
+                                                        TvBoxRepository.selectedDetail = detail
+                                                        onNavigateToDetail(detail)
+                                                    },
+                                                    onShowToast = { toastMessage = it },
+                                                    onSearchClick = onNavigateToSearch,
+                                                    sharedTransitionScope = sharedTransitionScope,
+                                                    animatedVisibilityScope = animatedVisibilityScope
+                                                )
+                                            }
                                         }
                                         2 -> Box(Modifier.fillMaxSize().let { if (!isMainLandscape) it.statusBarsPadding() else it }) {
                                             LiveScreenContent(
@@ -1406,6 +1428,16 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 // -------------------------------------------------------------------------------------
 /** 玻璃板高度（不含底部安全区）。 */
 private val NavBarHeight = 62.dp
+
+/**
+ * 分类页用哪个实现。
+ *
+ * `0` = 采集源版（默认）：左上角是可切换的当前数据源，行 = 源里真实的一级分类，
+ *       行内横滑海报，版式与首页第二屏以下同一套（`SourceCategoryScreen`）
+ * `1` = TMDB 版：行 = 电影 / 剧集类型（`TmdbCategoryScreen`）
+ * `2` = 旧版：站点 + 一级分类双列网格（`CategoryScreen`，代码整份保留）
+ */
+private const val CategoryVariant = 0
 
 /**
  * 是否绘制玻璃面板（填充 + 折射 + 外缘高光）。

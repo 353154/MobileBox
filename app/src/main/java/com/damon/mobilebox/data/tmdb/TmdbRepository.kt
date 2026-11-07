@@ -219,14 +219,28 @@ object TmdbRepository {
      * 简介允许为空（卡片不展示简介）。失败时返回上一次的缓存而不是空列表，
      * 免得一次网络抖动把整屏内容清空。
      */
-    private suspend fun list(path: String, mediaType: String, limit: Int, force: Boolean): List<TmdbMeta> {
-        val key = "$path|$limit"
+    private suspend fun list(
+        path: String,
+        mediaType: String,
+        limit: Int,
+        force: Boolean,
+        /**
+         * 额外 query。分类页的 `discover` 要用 `with_genres` / `sort_by`，其余接口传空。
+         * **必须进缓存 key**，否则「动作」和「喜剧」会共用同一份缓存。
+         */
+        extra: Map<String, String> = emptyMap()
+    ): List<TmdbMeta> {
+        val key = buildString {
+            append(path).append('|').append(limit)
+            extra.toSortedMap().forEach { (k, v) -> append('|').append(k).append('=').append(v) }
+        }
         if (!force) {
             rowCache[key]?.let {
                 if (SystemClock.elapsedRealtime() - it.at < ROW_TTL_MS) return it.items
             }
         }
-        val body = request(path, mapOf("language" to LANGUAGE, "page" to "1"))
+        val params = mapOf("language" to LANGUAGE, "page" to "1") + extra
+        val body = request(path, params)
             ?: return rowCache[key]?.items.orEmpty()
         val parsed = runCatching { gson.fromJson(body, TmdbSearchResponse::class.java) }.getOrNull()
         val items = parsed?.results.orEmpty()
@@ -267,6 +281,70 @@ object TmdbRepository {
     /** 影史高分，用来兜住「最近没好片」时的页面观感。 */
     suspend fun topRated(limit: Int = 14, force: Boolean = false): List<TmdbMeta> =
         list("/3/movie/top_rated", "movie", limit, force)
+
+    // ---------------- 分类页：类型表 + 按类型拉片 ----------------
+
+    private const val GENRE_TTL_MS = 24L * 60 * 60 * 1000
+
+    private class GenreEntry(val at: Long, val items: List<TmdbGenre>)
+
+    /** key = mediaType。类型表一天内不会变，24 小时够用；不需要淘汰。 */
+    private val genreCache = java.util.concurrent.ConcurrentHashMap<String, GenreEntry>()
+
+    /**
+     * 类型表（动作 / 喜剧 / 科幻 …），走 `/3/genre/{movie|tv}/list?language=zh-CN`。
+     *
+     * 剧集有少数类型 TMDB 不给中文（`Sci-Fi & Fantasy` 之类），由 [TmdbGenreZh] 兜底翻译；
+     * 不在映射表里的原样返回，宁可显示英文也不吞掉一行内容。
+     *
+     * 失败返回空表（不是上一次的缓存）：调用方据此显示「加载失败」，而不是给一屏空行。
+     */
+    internal suspend fun genres(mediaType: String, force: Boolean = false): List<TmdbGenre> {
+        if (!force) {
+            genreCache[mediaType]?.let {
+                if (SystemClock.elapsedRealtime() - it.at < GENRE_TTL_MS) return it.items
+            }
+        }
+        val body = request("/3/genre/$mediaType/list", mapOf("language" to LANGUAGE))
+            ?: return genreCache[mediaType]?.items.orEmpty()
+        val parsed = runCatching {
+            gson.fromJson(body, TmdbGenreListResponse::class.java)
+        }.getOrNull()
+        val items = parsed?.genres.orEmpty().mapNotNull { g ->
+            val name = TmdbGenreZh.of(g.name)
+            if (g.id <= 0 || name.isEmpty()) null else TmdbGenre(g.id, name)
+        }
+        if (items.isNotEmpty()) {
+            genreCache[mediaType] = GenreEntry(SystemClock.elapsedRealtime(), items)
+        }
+        return items
+    }
+
+    /**
+     * 某个类型下的热门片：`discover` + `sort_by=popularity.desc`。
+     *
+     * `vote_count.gte=50` 不能省 —— 不带它，「科幻」第一屏会是一堆刚上线、0 分的新片，
+     * 海报墙立刻变得不能看。`include_adult=false` 与 TMDB 自己的默认值一致，写明更明确。
+     *
+     * 复用 [list] 的 30 分钟缓存：key 里带了 `with_genres`，不同类型互不覆盖。
+     */
+    suspend fun discover(
+        mediaType: String,
+        genreId: Int,
+        limit: Int = 14,
+        force: Boolean = false
+    ): List<TmdbMeta> = list(
+        path = "/3/discover/$mediaType",
+        mediaType = mediaType,
+        limit = limit,
+        force = force,
+        extra = mapOf(
+            "with_genres" to genreId.toString(),
+            "sort_by" to "popularity.desc",
+            "vote_count.gte" to "50",
+            "include_adult" to "false"
+        )
+    )
 
     /** 轮播点进详情时先用内存里的那份，命中就不必再等网络。 */
     fun peek(mediaType: String, tmdbId: Int): TmdbMeta? =

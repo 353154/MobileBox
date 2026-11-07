@@ -53,7 +53,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
 import androidx.compose.ui.input.pointer.util.VelocityTracker
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -64,7 +63,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
-import coil.compose.AsyncImage
 import com.damon.mobilebox.data.tmdb.HomeCache
 import com.damon.mobilebox.data.tmdb.TmdbMeta
 import com.damon.mobilebox.data.tmdb.TmdbRepository
@@ -74,6 +72,7 @@ import com.damon.mobilebox.ui.components.HeroPosterPager
 import com.damon.mobilebox.ui.components.HomeBaseColor
 import com.damon.mobilebox.ui.components.HomeScrim
 import com.damon.mobilebox.ui.components.HomeTextColors
+import com.damon.mobilebox.ui.components.PosterImage
 import com.damon.mobilebox.ui.components.StandardPullToRefreshBox
 import com.damon.mobilebox.ui.components.homeTextColors
 import kotlinx.coroutines.CancellationException
@@ -650,10 +649,11 @@ private fun PosterTile(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFF1B2028))
         ) {
-            AsyncImage(
-                model = entry.posterUrl,
-                contentDescription = entry.title,
-                contentScale = ContentScale.Crop,
+            // 海报缺失 / 挂掉时用占位图顶上，避免留一块纯色板
+            PosterImage(
+                url = entry.posterUrl,
+                title = entry.title,
+                seed = "${entry.mediaType}:${entry.tmdbId}",
                 modifier = Modifier.fillMaxSize()
             )
         }

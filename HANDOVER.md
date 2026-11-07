@@ -448,6 +448,39 @@
 - **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。
 
 
+### 8.24 分类页换成「数据源真实分类 + 行内横滑海报」（2026-11-08 00:08 验收通过）
+
+**版式**（`SourceCategoryScreen.kt`，新建）：与首页第二屏以下同一套 —— 没有大海报，
+只有「分类名 + 一行可横滑的竖版海报」，海报 112dp / 2:3 / 间距 12dp / 边距 20dp / 行距 24dp。
+底部 110dp 渐隐，终点正好落在导航栏上沿。
+
+**数据源**
+- 左上角标题 = **当前数据源名字**（18sp 粗体 + 下拉箭头）。26sp 会把标题行撑成广告牌并挤掉搜索入口，已下调。
+- 点标题弹 `ModalBottomSheet` 列出 `currentSites`，当前项打勾；选中走 `TvBoxRepository.selectSite()`，
+  它会持久化选择、清空分类与片单缓存、重拉片库与分类树 —— 全局生效，不用手动刷新。
+- 行 = `realCategories` 里的顶层分类（`typePid == 0`；平铺表或无顶层时退回整张表），同名去重。
+- 行内 = `fetchCategoryVodList(site, typeId)`，一行一个 `LaunchedEffect`，`LazyColumn` 只组合屏幕内的行。
+
+**踩到的坑：并发把源打吐**
+- 现象：进分类页后前几行（欧美剧 / 台湾剧 / 泰剧 / 韩剧 / 纪录片）只有标题、没有海报。
+- 实测：逐个请求 `?ac=detail&t=32/34/35/38/28` **每个都能返回 20 条**；
+  但 4 个并发发出去，第一轮必有一个**返回空 body**（连 JSON 都不是，解析失败）。
+- 修：`Semaphore(2)` 限制两路并发 + 空结果等 500ms 重试一次；两次都空才判定「这个分类没片」，
+  此时**整行隐藏（连标题一起）**，不再留一串光秃秃的标题。
+
+**海报占位图**（`PosterPlaceholder.kt`，新增）
+- 采集源的 `vod_pic` 经常为空或死链。两张电影主题图（场记板 / 放映机）转成 2:3 webp
+  放在 `res/drawable-nodpi/`，各 5K 左右。
+- `PosterPlaceholderArt.pick(seed)` 用条目 id 的散列取模挑图 —— **稳定散列，不是真随机**：
+  同一部片永远同一张，滚动 / 重进不会换图。
+- `PosterImage(url, title, seed)` 统一「有图显示图、空或加载失败显示占位」。占位图**垫在最底层**，
+  真图叠上去，加载空窗期不会露灰板。
+- 覆盖：分类页行海报、`StandardPosterCard`（首页 / 搜索 / 我的 / 旧分类页全跟着生效）、首页 TMDB 海报行。
+
+**开关**：`AnimatedMainScreen.kt` 顶部 `CategoryVariant`，`0` 采集源版（默认）/ `1` TMDB 版 / `2` 旧网格版。
+TMDB 版（`TmdbCategoryScreen.kt`）与旧网格版（`CategoryScreen.kt`）代码整份保留，翻数字即可切回。
+
+
 ---
 
 ## 九、构建、部署与调试
