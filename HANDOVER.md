@@ -1,9 +1,10 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.13（追剧清单合并 · 追剧入口并入播放行 · 播放失败提示统一，用户验收通过版）
-> **更新时间**：2026-11-07 18:48
+> **文档版本**：v3.14（全量追平版 · WebDAV 同步 · 播放行为开关 · 统一弹窗容器）
+> **更新时间**：2026-11-07 19:05
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
 > **当前规模**：46 个 Kotlin 文件，约 14.2k 行（实测 14171）
+> **已推送**：`origin/main = 446abcc`，本地与远端一致
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。
@@ -27,7 +28,7 @@
 | :--- | :--- |
 | UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载；搜索页与详情页是独立路由 |
 | 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化。深色 `background #0D1117` / `surface #161B22`，浅色 `background #F2F2F7` / `surface #FFFFFF`（`AppTheme.kt` 为准，文档旧版写的 `#0E121A` 是错的） |
-| 播放 | **Media3 ExoPlayer 单内核**。点播已在详情页内做**原地播放**（不跳独立播放页，见 10.4）；直播 / 横屏仍用 `PlayerDetailScreen` 全屏层。全屏手势（亮度/音量/Seek/双击暂停）+ 画中画 PiP 见第十章。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十二章已知问题 1），并未真正切换内核 |
+| 播放 | **Media3 ExoPlayer 单内核**。点播已在详情页内做**原地播放**（不跳独立播放页，见 10.4）；直播 / 横屏仍用 `PlayerDetailScreen` 全屏层。全屏手势（亮度/音量/Seek/双击暂停）+ 画中画 PiP 见第十章。设置页「播放内核与视频增强」卡片里有**画中画小窗**与**后台播放**两个真开关（`PlaybackSettings`，见 8.10）；「MPV 解码内核」开关目前只是 UI 占位（见第十二章已知问题 1），并未真正切换内核 |
 | 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 + 同频道多线路自动切换 |
 | 数据 | 纯客户端直连，无后端；`TvBoxParser` 解析订阅，`TvBoxRepository` 统一状态源 |
 | 依赖注入 | Hilt |
@@ -57,8 +58,12 @@
 | `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型（**点播已不走这里**，只剩直播 / 横屏） | 控制按钮用 M3 原生；竖屏 `statusBarsPadding`，PiP 时强制 `fillMaxSize`；`VideoRoute.displayName()` 是播放源名称唯一出口 |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
 | `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/全站搜索/选中站点） | `cacheInitialized` 保证 `initFromCache` 幂等，见 7.2；首启自动订阅见 8.5 |
-| `data/watch/WatchStore.kt` | 追剧收藏 / 播放历史（**独立** `watch_prefs` DataStore + 共享 StateFlow） | 见 8.6；不要复用订阅或主题的 DataStore |
-| `ui/profile/ProfileScreen.kt` | 「我的」页统计 / 收藏 / 历史，全部由真实播放记录推导 | `stats` 是可空覆盖入口，正常业务不传；时长口径见 8.7 |
+| `data/watch/WatchStore.kt` | 追剧收藏 / 播放历史（**独立** `watch_prefs` DataStore + 共享 StateFlow） | 见 8.6；不要复用订阅或主题的 DataStore；`importBackup()` 是 WebDAV 合并的唯一写入口 |
+| `data/watch/PlaybackSettings.kt` | 播放行为开关（画中画 / 后台播放，**独立** `playback_prefs` + `StateFlow` + 同步快照） | 见 8.10；MainActivity 前后台状态也走这里 |
+| `data/watch/WebDavConfig.kt` · `WebDavSync.kt` | WebDAV 配置（`webdav_prefs`）与同步内核（GET/PUT/MKCOL + Basic Auth + 并集合并） | 见 8.13；应用密码明文存本机 |
+| `ui/components/StandardDialog.kt` | **全应用唯一弹窗容器**（`surface` + 6dp tonalElevation + 20dp 圆角） | 新增弹窗必须走 `StandardDialog` / `StandardDialogSurface`，别再写裸 `AlertDialog`，见 8.14 |
+| `ui/components/WebDavSyncDialog.kt` | 云端同步弹窗（未配置展开表单 / 已配置只显摘要卡 + 三个同步动作） | 见 8.13 |
+| `ui/profile/ProfileScreen.kt` | 「我的」页统计 / 收藏 / 历史，全部由真实播放记录推导 | `stats` 是可空覆盖入口，正常业务不传；时长口径见 8.7 / 8.11 |
 | `ui/profile/WatchListScreen.kt` | 历史 / 追剧清单 / 在看共用的列表页（`WatchListType` 枚举 + `watchlist/{type}` 路由） | 只存最小展示字段，进详情前按片名现取线路，见 8.7 / 8.9 |
 
 ---
@@ -69,8 +74,8 @@
 - **搜索**：首页顶栏放大镜进入；并发查所有站点、按片名跨站去重；点结果直进详情（搜索结果自带选集，无需再查详情接口）。
 - **分类**：两级 FilterChip（分类/排序）+ 双层缓存（内存 + `TvBoxRepository`），返回 0ms 恢复。
 - **直播**：分组 chips → 频道列表；右侧详情区静音预拉流并实时高斯模糊，加载期 Bing 壁纸轮播；**点播放按钮才开始播放**；EPG 有数据才显示，没有就整行不出现。同一频道配置了多条线路时**自动切换**（见 3.1）。
-- **设置**：主题、色盘、3D 开关、订阅源管理。开关状态一律走 `StateFlow`（见 7.4）。
-- **我的**：收藏/在看的指标卡 + 空状态（68dp 紧凑行）。
+- **设置**：主题、色盘、3D 开关、播放行为（画中画小窗 / 后台播放）、云端同步（WebDAV）、订阅源管理。开关状态一律走 `StateFlow`（见 7.4 / 8.10）；左侧图标统一走 `SettingLeadingIcon`（24dp 占位 / 22dp 绘制）。生物识别隐私锁占位项已于 2026-11-07 删除（见 8.15）。
+- **我的**：「全部观看」总时长 + 电影 / 剧集 / 直播三类分类时长（见 8.11）、历史观看 / 追剧清单 / 在看剧集三段同构卡片（见 8.9 / 8.11）。
 - **搜索**（独立路由 `search`，不在 Tab 内）：首页顶栏图标进入，并发查询所有可搜索站点、按片名去重，结果 2 列网格复用 `StandardPosterCard`；从详情页返回保留上次结果、不重查、不弹键盘（见 8.4）。
 
 ### 3.1 直播多线路自动切换
@@ -245,7 +250,7 @@
 - 播放历史 `WatchRecord` 只在 `MobileVideoPlayer.onFirstFrameRendered` **真正出画面时**落地：加载失败与自动换源期间不记。**一条记录 = 一个「影片 + 集数」**，不是一次播放会话（16:38 用户反馈同一集播 4 次出现 4 行，已改为稳定 id 归并，详见 8.8）。`MovieDetailScreen` 用普通类 `PlaySession` + `DisposableEffect(playTarget)` 结算 `watchedMs` 与播放位置（换集 / 换源 / 退出播放 / 页面销毁都会 dispose），计时用 `SystemClock.elapsedRealtime`。**同一会话内首帧回调可能多次触发**，`recordId == null` 是唯一幂等门；历史上限 50 条。
 - `watchedMs` 是会话墙上时间，含暂停 / 后台，是**上界近似值**，不是解码器精确播放时长。`ProfileScreen.buildViewingStats(history)` 据此推导统计卡片的「时长 / 部 / 集」、近 7 天曲线与 24h 柱状图；`ViewingStats` 默认值一律 0，删掉了原来的 `(2..5).random()` 和写死的 12.5 小时 / 14 部 / 3 部。minSdk 24，用 `Calendar` 而不是 `java.time`，不引入 desugaring。**首版时长口径是「小时 · 1 位小数」，已按用户反馈改为分钟级，见 8.7**。
 - **遗留播放页 `PlayerDetailScreen`（直播 / 横屏）只接了收藏，没接播放历史**：点播现行入口是详情页原地播放（见 10.4），避免把直播频道混进影片历史。
-- 未做：WebDAV 同步（Step 5.2，以本条为前置）。列表页与统计精度已补，见 8.7。
+- WebDAV 同步（Step 5.2）已按本条派生落地，见 8.13；列表页与统计精度见 8.7，分类统计见 8.11。`WatchStore.importBackup()` 是同步合并时唯一允许绕过 `recordPlayback` 的写入口（列表整体替换，不累加）。
 
 ### 8.7 观影列表页与分钟级统计（2026-11-07 16:19 新增，用户真机验收通过）
 - **精度问题的根因不是没记上，是单位被四舍五入吃掉**：首版 `hoursOf()` 把毫秒换成小时后 `round1()`（0.1 小时 = 6 分钟），看几分钟显示 `0.0 小时`，曲线数组也被 round 成 0、`StatBarChart` 的 `value > 0f` 不成立所以柱子不画。现统一改为**分钟**：`ViewingStats` 的时长字段存毫秒（`last7DaysMillis / weekMillis / todayMillis`），卡片用 `formatWatchDuration(millis)` 显示 `X 分钟`（不足 1 分钟显示 `X 秒`）；曲线数组以分钟浮点存储且**不再 round1**，看几分钟也有可见柱高。三张卡片字号分别 28 / 24 / 24sp 并加 `maxLines = 1`，防止中文单位撑破左栏。
@@ -270,6 +275,47 @@
 - **追剧按钮上移**：从底部操作行（原 `DetailAction` 第 8 组、要滚两屏）移到「立即播放」右侧 —— `Row { Button(weight(1f), 48dp) + 12dp + FavoriteToggle(48dp 圆形) }`。容器沿用播放按钮的固定浅灰 `Color(0xFFE4E7EE)`（**不跟主题取色**，否则深色模式浅底浅字），已追剧换实心 `Bookmark` + `primary`。
 - **播放态补偿**：`立即播放` 那一行只存在于浏览态，播放态改在「选集」标题右侧放 32dp 裸 `IconButton`（`SectionTitle` 新增可选 `trailing` 槽位），不新增行高、不打断「播放器 → 选集 → 播放源」的顺序（10.4 的用户要求）。两处共用同一个 `toggleFavorite` lambda 与 toast 文案。
 - **未动**：`PlayerDetailScreen`（直播 / 横屏）底部操作行仍是原来的 4 项，按用户「那个不改了」保持原样。
+
+### 8.10 播放行为开关：画中画 / 后台播放（2026-11-07 17:33 新增，用户真机验收通过）
+- 新增 `data/watch/PlaybackSettings.kt`：独立 `playback_prefs` DataStore（**不复用**主题的 `settings`，避免清主题数据时连坐），同时暴露两种读取口 —— `prefsFlow: StateFlow`（设置页 `collectAsState()`，切 Tab 不回默认值，见 7.1）与 `@Volatile` 同步快照（`MainActivity.onUserLeaveHint`、播放器生命周期回调不在 Compose 作用域里，必须立刻读到最新值）。`MobileBoxApp.onCreate` 调一次 `init(this)`。
+- **画中画小窗**（默认开）：`PipController.tryEnterPip()` 先校验 `PlaybackSettings.pipEnabled`，关掉后按 Home 只是普通退后台（日志打 `skip: pip disabled`）。
+- **后台播放**（默认关）：`MainActivity.onStart/onStop` → `PlaybackSettings.onAppForeground/onAppBackground()` 维护 `appInBackground`（Compose state），`MobileVideoPlayer` 用 `LaunchedEffect(backgroundPlayEnabled, appInBackground, isInPip)` 决定暂停 / 续播：切后台且开关关闭 → 记 `resumeOnReturn = isPlaying` 再 `pause()`，回前台只在本来在播时 `play()`；开关开启 → **完全不干预 ExoPlayer**，并 `setWakeMode(C.WAKE_MODE_NETWORK)` 抬起网络唤醒锁（Manifest 已加 `WAKE_LOCK`），锁屏可继续出声。
+- **PiP 必须优先短路**：少数 ROM 进小窗也会走 `onStop`，判断顺序是「先看 `isInPip`（小窗内一律不暂停、该恢复就恢复）→ 再看 `appInBackground`」，否则小窗会被自己的后台逻辑暂停。
+- 组合行为：都关＝按 Home 暂停、回来续播；只开后台＝纯音频继续；只开画中画＝小窗播放；都开＝优先小窗（系统托管 PiP，不参与暂停判断）。
+- **能力边界**：后台播放没有前台服务，长时间锁屏仍可能被系统回收进程。
+
+### 8.11 「全部观看」统计与分类时长（2026-11-07 16:59 需求 + 17:1x 修复，用户真机验收通过）
+- 第一张统计卡片由「最近 7 天」改为**「全部观看」**：不按时间窗过滤，显示累计总时长 + **电影 / 剧集 / 直播三类各自时长**，去掉右侧柱状图；第二 / 第三张（本周观看 / 今天）的曲线保持原样。
+- 分类口径：`ViewingStats` 新增 `movieMillis / seriesMillis / liveMillis`，按历史记录的内容类型归集；直播记录由 `LiveScreenContent` 写入（`isLive = true`），所以**直播时长从这一版才开始累计**，老数据里没有。
+- **「电影 1 秒」是格式化的假象，不是统计算错**（17:1x 用户截图反馈）：`formatWatchDuration` 里有 `seconds.coerceAtLeast(1L)`，把 0 毫秒强行显示成「1 秒」，于是一条剧集记录下面凭空多出「电影 1 秒 / 直播 1 秒」。修法两条：① 0 毫秒如实显示「0 秒」，只有真 >0 但不足 1 秒才显示「1 秒」；② 「全部观看」只列出**有观看时长**的分类，全空时显示「暂无观看记录」。
+- 三个分类行加了显式 `lineHeight`，190dp 卡片内三行不再被裁（此前第三行「直播」会被切掉）。
+- 四类列表（历史 / 收藏 / 待看 / 在看）同期补了**单条删除与整表清空**（顶部按钮 + 二次确认 `StandardDialog`），历史行点击走**续播**（带 `resumeRecord` 回详情页自动起播对应集与位置），其余类型点击进播放详情页。待看已于 18:37 合并进「追剧清单」，见 8.9。
+
+### 8.12 订阅弹框：剔除直播源 + 排版重构（2026-11-07 17:1x 装机，用户真机验收通过）
+- **直播源混进「可用影视站点」**：订阅里有一项「专属直播频道（实测…）`CMS-XML`」，它的 `api` 指向 `live.txt` / `live.m3u`，没有点播分类与搜索接口 —— 切过去首页全空，跨站聚合还会白等一次 8s 超时。新增 `TvBoxSite.isLiveOnlySite`（名称含「直播 / 电视频道 / 电视台」，或 api 以 `.m3u/.m3u8` 结尾、含 `/live.txt`、`live.m3u`），在**订阅解析**与**缓存恢复**两处过滤，弹框列表与计数只用点播站。
+- **直播功能不受影响**：频道来自同一份配置的 `lives` 字段，独立解析（实测 54 个频道），与 `sites` 过滤无关。
+- **排版**：原来是 `AlertDialog` 的 text 槽放 `LazyColumn`，没有高度上限 —— 站点一多整框撑满屏幕，列表末尾被裁、「完成」按钮孤零零压在空白下面。改为自定义 `Dialog` + `StandardDialogSurface`：固定 **88% 屏高**，标题与底部按钮常驻，中部 `LazyColumn` 滚动。
+
+### 8.13 WebDAV 云端同步（Step 5.2，2026-11-07 18:30 用户真机验收通过，提交 `65ee4b5`）
+- 纯客户端直连，标准 WebDAV `GET / PUT / MKCOL` + Basic Auth，复用已存在的 OkHttp 4.12 / Gson，**没有新增任何依赖**。配置存独立 `webdav_prefs`（`WebDavConfig.kt`，含 `clear()`），`MobileBoxApp` 初始化。
+- 产物是 `{服务地址}/{目录}/backup.json`，只装 `favorites` 与 `history`（待看 / 在看是派生视图，不单独存）。三个动作：**上传备份**（本机 → 云端）、**下载恢复**（云端 + 本机合并）、**双向同步**（拉取合并 → 写本机 → 推回云端；云端无备份时自动降级为上传）。
+- **合并规则**：按 `videoId_episodeId` 取并集；`watchedMs / durationMs` 取较大值（避免两端重复累加翻倍）；播放进度与元信息取较新那条；上限沿用 50 条历史 / 200 条收藏。写回本机走 `WatchStore.importBackup()`（列表整体替换，**不经过 `recordPlayback` 的累加逻辑**）。
+- **上传前必须先 MKCOL**：早期版本只在 PUT 返回 409/404 时才补建目录，某些服务（含当初的临时测试服务）在目录不存在时直接拒，且不消费请求体 → keep-alive 连接里残留的 body 会污染后续请求。现在无条件先 `MKCOL`（已存在返回 405，忽略）再 `PUT`，并对每个响应消费 body。
+- **配置态两分**：已配置时打开弹窗只显示轻量摘要卡（地址 / 账号 / 目录 / 完整 `backup.json` 路径 + 「已配置」徽章）+ 三个同步按钮 + 「删除配置 / 新建配置」；未配置或点新建才展开四项表单。删除只清本机配置，**云端文件不动**。
+- **已知取舍**：① **删除不跨设备同步** —— 合并是纯并集，A 端删掉的记录会被云端那份带回来；要支持需墓碑标记并改 `WatchStore` 的删除方法。② 应用密码明文存本机 `webdav_prefs`。③ 全部手动触发，无后台自动同步、无前台服务。
+- 坚果云可用：地址 `https://dav.jianguoyun.com/dav/`，账号填邮箱，密码必须用网页端「第三方应用管理」生成的**应用密码**（填登录密码必 401）；单文件 500M、免费版每 30 分钟 600 次请求，`backup.json` 只几十 KB，一次同步最多 3 个请求。
+
+### 8.14 全应用统一弹窗容器 `StandardDialog`（2026-11-07 18:30 装机，用户真机验收通过，提交 `65ee4b5`）
+- **问题**：用户反馈「关于我们弹窗没取色，和云端同步弹窗颜色不一样」。根因是三种容器并存：`AlertDialog` 纯 `surface` 无 tonal elevation（看着是「死」底色，28dp 圆角）、订阅弹框 `surface + 2dp`（24dp 圆角）、同步弹窗 `surface + 6dp`（20dp 圆角）。
+- **定案**：`ui/components/StandardDialog.kt` 定义唯一基准 —— `MaterialTheme.colorScheme.surface` + **固定 6dp tonalElevation** + **20dp 圆角** + 20dp 内边距 + 12dp 元素间距。这个组合会跟随浅色 / 深色、动态取色、自定义主题色一起变。导出两个：`StandardDialog`（常规弹窗）与 `StandardDialogSurface`（三段式 + 滚动内部的容器外观，内部布局不动）。
+- 6 处全部接入：关于我们、主题选择、主题色色盘、观影列表清空确认、TVBox 订阅配置、WebDAV 同步。色盘弹窗**关掉外层滚动**，避免拖动取色与列表滚动抢手势。
+- 约定：**新增弹窗必须走这两个组件**，不要再写裸 `AlertDialog`，否则又会退回到三套颜色。
+
+### 8.15 设置页清理：删生物识别锁占位 + 图标统一（2026-11-07 18:2x 装机，用户真机验收通过，提交 `cd06307`）
+- **删除「生物识别隐私锁 (Biometric)」整块**（Row + 分隔线 + `isBiometricEnabled` state + 相关 toast）：用户明确「没什么意思，直接删除这个设置」。删除前它只是占位 —— 纯 `remember`、不持久化、无 `androidx.biometric` 依赖、无 `USE_BIOMETRIC` 权限，也**没有任何「成人 / 私密分类」可锁**。分组标题随之由「安全与系统关于」改为「系统关于」。
+- **图标统一**：原来左侧 7 个图标代码里都写 `24.dp`，真正不统一的是「关于 MobileBox」走 `SettingRowItem`（22dp 且灰色），右侧箭头还有 `20/18dp` 混用。新增 `SettingLeadingIcon`（固定 24dp 容器 + 22dp 绘制 + 统一主题色），8 行全部走同一个组件；箭头统一 18dp，主题色圆球 20 → 18dp。
+- 顺带删掉删除后变成未使用的 `onShowToast` 参数，编译警告归零（只剩图标 `AutoMirrored` 弃用警告）。
+
 
 ---
 
@@ -300,6 +346,9 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 | `MB-SUB` | 首启使用内置默认订阅、以及内置订阅加载失败 |
 | `MB-PIP` | 画中画：`onUserLeaveHint playerActive=?`、`enterPictureInPictureMode -> bool, ratio=WxH`、`onPipModeChanged(bool)`、`skip: ...` |
 | `MB-XSITE` | 详情页跨站线路聚合：`+N 条线路 / M 个站点` |
+| `MB-PLAY` | 播放器失败原始原因（`播放源失败，交外层自动换源`）、`setWakeMode 失败`（后台播放开关接线时） |
+
+> WebDAV 同步**没有 logcat 埋点**：错误原因（401/403/404/超时/证书）直接以中文文案回显在同步弹窗里，排查时看弹窗提示 + 云端 `backup.json` 是否存在。
 
 ### 视觉问题排查方法（成本远低于反复改代码试错）
 `screenrecord` 录屏 → `ffmpeg` 30fps 抽帧 → 分区逐帧差分（`numpy` 均值差）定位到具体帧 → 裁剪放大拼图看变化形态。
@@ -369,6 +418,14 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - **两个时序坑**：① 同一源重复报错的判重必须用 `activeStreamUrl`（真正送进 `prepare` 的 URL），用外部 `streamUrl` 会在换源重组那一帧连跳两条线路；手动重试同源靠 `LaunchedEffect(streamUrl, reloadToken)` 重置判重。② `selectedEpisodeId` 不能以 `selectedRouteIndex` 作 remember key（原因见 10.3）。
 - `reloadToken` 让「点当前高亮 chip 重试同一个源」也能强制重新 prepare —— 此时 `streamUrl` 不变，光靠它不会触发重载。
 
+### 10.7 横屏全屏控制条与「蓝色色块」（2026-11-07 17:1x 装机，用户真机验收通过）
+- **用户反馈三点**（横屏全屏截图）：底部时间戳「00:01 / 57:17」贴着屏幕最下沿几乎看不见；右下角全屏切换按钮同样被裁；右上角有一块不知名的蓝色色块。
+- **底栏**：横屏沉浸式隐藏系统栏后没有任何 insets，控制条直接压到物理边缘。修法是底栏加 `navigationBarsPadding()`，横屏左右内边距 16 → **32dp**、下内边距 8 → **24dp**；顶栏同样加横屏 32dp / 12dp 避让。
+- **蓝色色块**：是控制条右侧那块 `MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)` 的「全屏影院」标签被挖孔 / 边缘裁掉文字后剩下的色块。横屏点播**直接隐藏该标签**（直播仍显示 `LIVE 电视直播` 红色标签）。
+- **连带修的底层问题**：详情页横屏播放时，播放层仍按竖屏逻辑收成 16:9 高度，露出底层详情内容半截。现 `isLandscape && playTarget != null` 时播放器层**铺满整窗**，同时 B 层（详情内容）`alpha = 0` 隐藏 —— 与 PiP 的处理同源（`MovieDetailScreen.kt` 里同一个判断条件）。
+- 横屏退出仍走 `BackHandler`（先关播放器再退出横屏），与 10.1 的手势互不冲突。
+
+
 ---
 
 ## 十一、协作约定（当前维护者的硬性要求）
@@ -389,7 +446,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 2. 中间调海报（条带内明暗混杂）字色只能取对比度更好的一侧，个别字仍会偏糊。
 3. 演职人员、剧照、预告片仍是测试数据占位，等刮削接口。
 4. **手势单击有 ~300ms 延迟**（`onDoubleTap` 的 Compose 固有行为，见 10.1）。用户未表态是否接受，嫌钝就改手写 tap 检测。
-5. **PiP 与手势、跨站聚合均未经用户在真机上逐条验收**（2026-11-07 提交时用户要求跳过手势测试直接做下一项；PiP 由 Agent 自测通过：进/出小窗无 Activity 重建、画面正常、比例正确）。跨站聚合的「点击切换跨站线路」一项未实测（测试中途用户开始用手机，停止操作）。
+5. **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合已于 2026-11-07 逐条真机验收通过**（用户 18:2x 明确「验证通过」），ROADMAP 对应条目已勾。原记录的「未实测」作废。
 6. 首页部分海报偶发灰底不显示（图片 CDN 问题，查 `MB-IMG`）。
 7. 源数据问题（非 App 缺陷，改不了客户端）：FEIFAN 线路对部分剧集报「媒体流编码格式无法识别」，切 FFM3U8 或跨站线路可播；现已由 10.5 的自动接力兜住，无需用户手动切。
 8. **「我的」页与追剧的假数据已清除，整批改动 2026-11-07 16:29 用户真机验收通过**（16:05 持久化装机、16:19 列表页与分钟级精度装机、16:26 详情页入场显示兜底装机）：`ProfileScreen.kt` 的 `ViewingStats` 已由 `WatchStore` 真实播放历史推导（默认值全 0，删掉 `(2..5).random()` 与写死的 14 部 / 3 部），两个详情页的 `isFavorite` 已换成持久化收藏；统计时长已改为分钟级，四个入口已能点开列表页。详见 8.6 / 8.7。ROADMAP 对应两条补充迭代已勾选。
@@ -398,6 +455,9 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 10. **「追剧清单」合并与追剧入口上移已验收并提交 `d3f6379`**（2026-11-07 18:37 装机，18:48 验收通过）：`PENDING` 枚举与 `clearPending()` 已删，待看清空语义变为整表清空；追剧按钮从底部操作行移到「立即播放」右侧（播放态在「选集」标题右侧），窄屏文案与暗场图标均未发现问题。详见 8.9。
 11. **播放失败提示已统一并提交 `d7c0a59`**（2026-11-07 18:43 装机，18:48 验收通过）：直播 / 横屏的深色错误卡片与两个文字不显示的按钮已删除，改为与详情页终态一致的「图标 + 一行原因」。详见 10.6。
     - 仍待拍板：直播场景文案是否从「请更换播放源」改为「请切换频道」（当前保留通用文案）。
+12. **WebDAV 同步的三条取舍**（详见 8.13）：删除不跨设备同步（纯并集合并，A 端删掉的会被云端带回来，要支持需墓碑标记）；应用密码明文存本机 `webdav_prefs`；纯手动触发，无后台自动同步。**没有前台服务**，同步长时间运行时切后台仍可能被系统中断。
+13. **「全部观看」的分类时长口径**（详见 8.11）：直播时长从 2026-11-07 这版才开始累计，更早的历史没有直播数据；「电影 / 剧集」按记录的内容类型归集，源站类型字段缺失时可能被算进「剧集」。
+14. **旧历史记录没有 `positionMs`**：`WatchRecord` 字段是后加的，Gson 缺字段按 0 处理 —— 老记录要**重新播一次并拖动 / 退出**才会有「看到 mm:ss」与续播能力，不会自动补。
 
 > 详情页 B 层顶部安全区已于 2026-11-07 修复并验收（Step 2.3），见 4.3。
 
@@ -405,10 +465,14 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - **阶段二已全部关闭**（Step 2.1 / 2.2 / 2.3 / 2.4 均验收通过）
 - **详情页原地播放 + 播放源自动接力 + 线路 chip 站点名**：2026-11-07 用户验收通过并已提交，见 10.4 / 10.5。
 - **单线路影片也显示播放源**：2026-11-07 用户验收通过，见 10.3；独立播放页（直播 / 横屏）维持原样，用户明确不改。
-- **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合**：已实现并提交（9cd1385、46191c7），仍等用户逐条真机验收后再勾 ROADMAP。
-- 追剧 / 播放历史真持久化 + 观影列表页 / 分钟级统计（见 8.6、8.7 与已知问题 8）：**2026-11-07 16:29 用户真机验收通过，ROADMAP 两条补充迭代已勾选、已提交 `cabf434`（未 push）**。
-- 观影记录去重 + 播放进度 + 「我的」页排版修复（见 8.8 与已知问题 9）：**用户真机验收通过，已提交 `c6f2797`**。
-- 「追剧清单」合并 + 追剧入口上移（见 8.9 与已知问题 10）：**2026-11-07 18:48 用户真机验收通过，已提交 `d3f6379`**。
-- 播放失败提示统一（见 10.6 与已知问题 11）：**2026-11-07 18:48 用户真机验收通过，已提交 `d7c0a59`**。
-- Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）。
+- **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合**：2026-11-07 用户逐条真机验收通过，ROADMAP 已勾（Step 3.3 只有前半勾，弹幕仍空）。
+- 追剧 / 播放历史真持久化 + 观影列表页 / 分钟级统计（见 8.6、8.7 与已知问题 8）：**16:29 验收通过，已提交 `cabf434` 并推送**。
+- 观影记录去重 + 播放进度 + 「我的」页排版修复（见 8.8 与已知问题 9）：**验收通过，已提交 `c6f2797` 并推送**。
+- 「追剧清单」合并 + 追剧入口上移（见 8.9 与已知问题 10）：**18:48 验收通过，已提交 `d3f6379` 并推送**。
+- 播放失败提示统一（见 10.6 与已知问题 11）：**18:48 验收通过，已提交 `d7c0a59` 并推送**。
+- **Step 5.2 WebDAV 云端同步**（见 8.13 与已知问题 12）：**18:30 验收通过，已提交 `65ee4b5` 并推送，ROADMAP 已勾**。
+- 18:30 同批验收的还有：「全部观看」分类统计（8.11）、订阅弹框剔除直播源 + 排版（8.12）、播放行为开关（8.10）、横屏控制条（10.7）、统一弹窗容器（8.14）。
+- **下一项：MPV 占位开关收尾** —— 把设置页「MPV 高性能解码内核」从假开关改成只读的真状态（当前内核：Media3 ExoPlayer），消掉「文案说切了 IJK 其实没切」的误导；真双核（Step 3.1）不做。
+- Step 3.1 双核解码：**用户已明确跳过**，不再排期。
 - Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）。
+- Step 4.1 Spider 调度 / 4.2 去广告 + TMDB 刮削 / 4.3 离线下载：均卡在外部前置（爬虫执行环境、TMDB key 与广告样本、WorkManager），排在 3.x 之后。
