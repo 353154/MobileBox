@@ -10,8 +10,26 @@ data class VideoRoute(
     val routeId: String,
     val routeName: String,
     val tag: String,
-    val episodes: List<VideoEpisode>
+    val episodes: List<VideoEpisode>,
+    /** 这条线路所属的采集站（TVBox 订阅里的 site.name）。UI 用它做前缀，区分「哪个源」。 */
+    val siteName: String = ""
 )
+
+/** 站点名去掉「(17万+高清海报)」这类营销后缀，避免撑爆 chip。 */
+fun shortSiteName(name: String): String =
+    name.substringBefore('(').substringBefore('（').trim()
+
+/**
+ * 播放源 chip 的统一文案：`站名·线路名 标签`。
+ * 线路名本身是上游 `vod_play_from` 标识（FEIFAN/FFM3U8/…），不带站点信息，
+ * 光看它用户无法判断来自哪个配置源，所以站名前缀在数据层就必须带上。
+ */
+fun VideoRoute.displayName(): String = buildString {
+    val site = shortSiteName(siteName)
+    if (site.isNotEmpty()) append(site).append('·')
+    append(routeName)
+    if (tag.isNotBlank()) append(' ').append(tag)
+}
 
 data class VideoDetailData(
     val id: String,

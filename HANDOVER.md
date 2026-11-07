@@ -1,9 +1,9 @@
 # MobileBox 交接与开发维护文档
 
-> **文档版本**：v3.4（播放器手势 · 画中画 · 跨站聚合版）
+> **文档版本**：v3.5（详情页原地播放 · 播放源自动接力版）
 > **更新时间**：2026-11-07
 > **分支**：`main` ｜ **远端**：`https://github.com/353154/MobileBox.git`
-> **当前规模**：39 个 Kotlin 文件，约 11.0k 行
+> **当前规模**：39 个 Kotlin 文件，约 11.7k 行
 > **真机验证**：`CPH2723`（Android 17 / arm64-v8a，设备号 `3B1F67EA9BBUHK76`）
 
 本文档面向「接手继续开发的人或 Agent」。
@@ -27,7 +27,7 @@
 | :--- | :--- |
 | UI | 单 Activity + Compose + Navigation，五大 Tab（首页/分类/直播/设置/我的）由 `HorizontalPager` 承载；搜索页与详情页是独立路由 |
 | 主题 | 默认 / 动态取色 / 自定义 HSV 色盘，深浅双模式，`DataStore` 持久化。深色 `background #0D1117` / `surface #161B22`，浅色 `background #F2F2F7` / `surface #FFFFFF`（`AppTheme.kt` 为准，文档旧版写的 `#0E121A` 是错的） |
-| 播放 | **Media3 ExoPlayer 单内核**，`PlayerDetailScreen` 全屏播放层；全屏手势（亮度/音量/Seek/双击暂停）+ 画中画 PiP，见第十章。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十二章已知问题 1），并未真正切换内核 |
+| 播放 | **Media3 ExoPlayer 单内核**。点播已在详情页内做**原地播放**（不跳独立播放页，见 10.4）；直播 / 横屏仍用 `PlayerDetailScreen` 全屏层。全屏手势（亮度/音量/Seek/双击暂停）+ 画中画 PiP 见第十章。设置页的「MPV 解码内核」开关目前只是 UI 占位（见第十二章已知问题 1），并未真正切换内核 |
 | 直播 | 频道分组 + 静音预拉流高斯模糊预览 + Bing 动态壁纸 + EPG 节目单 + 同频道多线路自动切换 |
 | 数据 | 纯客户端直连，无后端；`TvBoxParser` 解析订阅，`TvBoxRepository` 统一状态源 |
 | 依赖注入 | Hilt |
@@ -44,17 +44,17 @@
 | `ui/components/StandardPosterCard.kt` | **全局唯一海报卡片** | 3D 视差 + `sharedBounds` + `parallaxWeight` 抑制，层级结构不可随意调整 |
 | `ui/components/ParallaxEffect.kt` | 陀螺仪角度（相对握持基线）+ 应用级常驻监听 | 见 7.3 |
 | `ui/components/PosterTone.kt` | 海报明暗采样，决定叠在海报上的字色 | 见第六章 |
-| `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场）** | 全项目最敏感的文件，改之前读第四章 |
+| `ui/detail/MovieDetailScreen.kt` | **详情页（A/B 层级 + 整屏遮罩 + 交错入场 + 原地播放状态机 + 播放源自动接力）** | 全项目最敏感的文件，改之前读第四章与 10.4 / 10.5 |
 | `ui/search/SearchScreen.kt` | 全站搜索页（搜索框 + 2 列结果网格） | **刻意不自动聚焦**，原因见 8.4 |
 | `ui/components/StandardPullToRefreshBox.kt` | 自研下拉刷新（内容跟手位移） | 不要换成 M3 `PullToRefreshBox` |
 | `ui/components/ImageUrlCompat.kt` | 图片 URL 降级 + 失败重试 | 采集站 CDN 只支持 http |
 | `ui/components/LiveStreamPreview.kt` | 直播静音预拉流 + 实时模糊 | TextureView（SurfaceView 无法被 Compose 模糊） |
-| `ui/components/BingWallpaper.kt` | 5 张 Bing 壁纸缓存 + 轮播 + Ken Burns | 首帧回调后淡出 |
+| `ui/components/BingWallpaper.kt` | 5 张 Bing 壁纸缓存 + 轮播 + Ken Burns + `AmbientBackdrop`（海报模糊 / 壁纸回落） | 首帧回调后淡出；氛围底只覆盖视频下方，见 10.4 |
 | `ui/components/NavGlyphIcon.kt` | 5 枚自绘底栏图标（线框/实心双态） | 线宽统一靠这里 |
 | `ui/components/HorizontalScrollFadingEdge.kt` | 横向滚动双向渐隐 | 按可滚方向动态 |
-| `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 + 全屏手势 + 手势 HUD | 切换相关状态不能 `remember(streamUrl)`，见 3.1；手势性能结构见 10.1 |
+| `ui/player/MobileVideoPlayer.kt` | **点播/直播播放层**：ExoPlayer 封装 + 直播多线路自动切换状态机 + 全屏手势 + 手势 HUD + 加载态 / 失败上报 | 切换相关状态不能 `remember(streamUrl)`，见 3.1；手势性能结构见 10.1；新增 4 个受控参数与判重坑见 10.5 |
 | `ui/player/PipController.kt` | 画中画状态与参数（playerActive / 画面比例 / visibleRoute 校验） | 见 10.2 |
-| `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型 | 控制按钮用 M3 原生；竖屏 `statusBarsPadding`，PiP 时强制 `fillMaxSize` |
+| `ui/player/PlayerDetailScreen.kt` · `PlayerModels.kt` | 播放页外壳与数据模型（**点播已不走这里**，只剩直播 / 横屏） | 控制按钮用 M3 原生；竖屏 `statusBarsPadding`，PiP 时强制 `fillMaxSize`；`VideoRoute.displayName()` 是播放源名称唯一出口 |
 | `data/tvbox/TvBoxParser.kt` | 订阅 JSON / M3U / XMLTV 解析 | EPG 三种格式都在这里 |
 | `data/tvbox/TvBoxRepository.kt` | **唯一数据源**（列表/详情/EPG/全站搜索/选中站点） | `cacheInitialized` 保证 `initFromCache` 幂等，见 7.2；首启自动订阅见 8.5 |
 
@@ -273,7 +273,7 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 
 ---
 
-## 十、播放器：全屏手势与画中画（2026-11-07 新增）
+## 十、播放器：手势、画中画与详情页原地播放（2026-11-07 新增）
 
 ### 10.1 全屏手势（Step 3.2）
 - 左半屏上下滑 → 屏幕亮度（改 `window.attributes.screenBrightness`，clamp 0.02~1；起点为 -1 跟随系统时先读 `Settings.System.SCREEN_BRIGHTNESS`，否则第一次下滑从 0 跳）。
@@ -297,11 +297,30 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 
 ### 10.3 详情页跨站线路聚合
 - `TvBoxRepository.searchCrossSiteRoutes(keyword, excludeSiteKey)`：并发查所有 `searchable` 站（6s 超时），**只留片名精确同名**的条目（模糊命中会把「第二季」「剧场版」混进线路列表）。
-- 详情页 `mergedData` state + `LaunchedEffect(finalData)` 异步聚合，**不阻塞首屏**：先显示当前站线路，查到再追加 chips；`routeName` 前缀站名、`routeId` 前缀站 key，下游 `PlayerDetailScreen` 零改动。
-- **切线路必须重置集数**：`selectedEpisodeId` 的 remember key 含 `selectedRouteIndex`（各站集数/编号可能完全不同）。
+- 详情页 `mergedData` state + `LaunchedEffect(finalData)` 异步聚合，**不阻塞首屏**：先显示当前站线路，查到再追加 chips；只标 `siteName` + `routeId` 前缀站 key，**不再改 `routeName`**，下游统一用 `displayName()` 展示。
+- **切线路必须重置集数**，但 `selectedEpisodeId` **不能用 `selectedRouteIndex` 作 remember key**：自动换源回调发生在组合之外，带 key 会在下一次重组把刚写入的「同一集」覆盖回第一集（见 10.5）。改为无 key + 在 `onSelect` / `startPlayback` / `onSourceFailed` 三处显式重置。
 - 线路 chips 已改 `LazyRow`（原来是普通 `Row`，超屏宽的 chip 直接被裁掉）。
 - 日志 `MB-XSITE: +N 条线路 / M 个站点`；查不到同名就静默跳过。
 - 注意：线路名 FEIFAN/FFM3U8 等是上游 `vod_play_from` 标识，**不代表站点**。
+- **线路 chip 统一带来源站点名（2026-11-07，已验收）**：`VideoRoute.siteName` 由数据层 `parseMacCmsVodToDetail(vod, site.name)` 填入，5 个生成入口（首页/分类/跨站搜索/跨站聚合/分类独立拉取）全覆盖；UI 统一走 `PlayerModels.displayName()` = `站名·线路名 标签`（站名截掉括号内营销后缀）。此前只有跨站聚合手工把站名拼进 `routeName`，当前站的 FEIFAN/FFM3U8 没有前缀，用户看不出属于哪个配置源。跨站聚合现在只标 `siteName` + 保留 `routeId` 的站 key 前缀，不再改 `routeName`。详情页 `RouteChips` 与 `PlayerDetailScreen` 播放源列表同步生效；占位/旧数据无 `siteName` 时兜底用当前激活站点名。
+
+### 10.4 详情页原地播放（2026-11-07 用户验收通过）
+用户称「锚点重置与空间自适应原地播放」。点播放不再弹独立全屏播放页，改为详情页内三相位连续过渡，**这是点播的现行入口，`PlayerDetailScreen` 只在直播 / 横屏使用**。
+
+- **几何由两个 `Animatable` 驱动，动画全程零重组**：`morph` 0→1 时 A 层用 `Modifier.layout` 把高度从父约束 `constraints.maxHeight` 收到 `屏宽×9/16` 并下移一个状态栏高度；B 层首块用**同一份 morph** 从 `heroHeight - statusBar` 收到视频高。两条高度必须同源，否则片名与视频下沿错开。所有进度只在 `layout` / `draw` / `graphicsLayer` 的 lambda 里读 —— 详情页一次重组上百 ms，用 `animateDpAsState` 必卡。
+- **归位与收缩并行同长**：`scrollState.animateScrollTo(0, tween(320))` 与 `morph.animateTo(1f, tween(320))` 同时跑，内容从当前 offset 单调移动到贴住视频下沿，方向由当前偏移决定。串行两段（先回顶部再补位）会经过「刚进详情页」这个多余中间态，是用户明确否掉的。注意详情页是 `verticalScroll(ScrollState)` 不是 `LazyColumn`，`animateScrollToItem` 用不了；`animate{}` 的 block 非 suspend，也驱动不了 `scrollTo`。
+- **播放器首次挂载必须放在动画结束之后**：`ExoPlayer.Builder` + `PlayerView` 首次 inflate 是 100~300ms 主线程重活，塞进动画窗口会吞掉滚动帧。
+- **A/B 层与 SurfaceView 打洞**：播放态 A 层加 `zIndex(1f)`（视频压在内容之上，上滑内容滑进视频后面）；PiP 时 A 层铺满小窗、B 层 alpha=0。`PlayerView` 是 SurfaceView，画框区域内、在 `AndroidView` **之前**绘制的 Compose 内容会被擦掉 —— 所以氛围底必须用 `layout` 裁成「屏高 − 状态栏 − 视频高」并贴底，只覆盖视频下方；画框内要显示的东西（转圈、控制条、错误提示）只能放在播放器内部。想物理合成一张整屏背景就得换 TextureView，已明确排除。
+- **氛围底**：`AmbientBackdrop`（`ui/components/BingWallpaper.kt`）由播放器加载态与详情页下方共用：海报 → http 降级 / CDN 拦截页重试 → 彻底失败回落 `BingWallpaperStore` 缓存壁纸 → 放大 1.18 + `blur(18.dp)` + 暗罩。详情页传 `showAmbientBackdrop = false`，画框只用 `playerBackdrop #0A0E17` 纯色，下方氛围底顶部 120dp 用同色不透明起步再渐显海报色，视频下沿同色相接。`Modifier.blur` 仅 Android 12+ 生效，低版本退化为未模糊海报。
+- **播放态内容**：详情不删，只是把「选集 → 播放源」提到视频下方最前；唯一去掉的是「立即播放」按钮。播放态字色锁死浅色（浅色主题下整页压暗，继续用近黑字会黑底黑字），状态栏图标强制浅色，单集也显示「正片」chip。选集 / 线路 / 分类 chip 统一 `NeutralChip`（透明底 + 淡描边，选中靠主字色描边与字重区分），不引入主题色。
+
+### 10.5 播放源自动接力与失败终态（2026-11-07 用户验收通过）
+- 状态放详情页（只有它持有 `mergedData.routes`）：`attemptAnchor` 本轮起始线路、`attemptCount` 已尝试条数。失败按 `anchor + count` 轮转，集数按 `episodeId → 集名 → 第一集` 兜底，空集线路跳过，**所有线路都试完才出终态**。手动播放（立即播放 / 选集 / 播放源 chip）开启新一轮并清终态。
+- 播放器新增 4 个带默认值的参数 `onSourceFailed` / `loadingHint` / `fatalError` / `reloadToken`，直播、横屏、`PlayerDetailScreen` 三条调用链零改动、不回归。
+- 尝试期间加载态只有转圈 +「正在尝试 <真实播放源名>」，名称走 `routeDisplayName()`，与播放源 chip 逐字一致；首帧一出自动收起。首帧前整条控制条不显示（用户明确要求不要中央播放键与快进快退）。
+- 全部失败后只画一个 `ErrorOutline` 图标 +「播放失败，请更换播放源。」，**无黑框、无卡片、无按钮**；换源点下方 chips，退出用系统返回键。终态一并关闭 PiP 资格、控制条、菊花、加载背景。
+- **两个时序坑**：① 同一源重复报错的判重必须用 `activeStreamUrl`（真正送进 `prepare` 的 URL），用外部 `streamUrl` 会在换源重组那一帧连跳两条线路；手动重试同源靠 `LaunchedEffect(streamUrl, reloadToken)` 重置判重。② `selectedEpisodeId` 不能以 `selectedRouteIndex` 作 remember key（原因见 10.3）。
+- `reloadToken` 让「点当前高亮 chip 重试同一个源」也能强制重新 prepare —— 此时 `streamUrl` 不变，光靠它不会触发重载。
 
 ---
 
@@ -325,13 +344,15 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 4. **手势单击有 ~300ms 延迟**（`onDoubleTap` 的 Compose 固有行为，见 10.1）。用户未表态是否接受，嫌钝就改手写 tap 检测。
 5. **PiP 与手势、跨站聚合均未经用户在真机上逐条验收**（2026-11-07 提交时用户要求跳过手势测试直接做下一项；PiP 由 Agent 自测通过：进/出小窗无 Activity 重建、画面正常、比例正确）。跨站聚合的「点击切换跨站线路」一项未实测（测试中途用户开始用手机，停止操作）。
 6. 首页部分海报偶发灰底不显示（图片 CDN 问题，查 `MB-IMG`）。
-7. 源数据问题（非 App 缺陷，改不了客户端）：FEIFAN 线路对部分剧集报「媒体流编码格式无法识别」，切 FFM3U8 或跨站线路可播。
+7. 源数据问题（非 App 缺陷，改不了客户端）：FEIFAN 线路对部分剧集报「媒体流编码格式无法识别」，切 FFM3U8 或跨站线路可播；现已由 10.5 的自动接力兜住，无需用户手动切。
+8. **「我的」页统计与追剧仍是假数据**：`ProfileScreen.kt` 的 `ViewingStats` 默认值写死（今日 2.1 小时、7 天曲线固定数组、24 小时柱状图 `(2..5).random()`），收藏数 / 历史区也是占位；详情页 `isFavorite` 是 `remember` 假状态，点「追剧」只弹提示、退出页面就没了。本地 DataStore 持久化已调研但**零代码改动**，是下一个性价比最高的真实增量。
 
 > 详情页 B 层顶部安全区已于 2026-11-07 修复并验收（Step 2.3），见 4.3。
 
 **下一步（按 ROADMAP）**
 - **阶段二已全部关闭**（Step 2.1 / 2.2 / 2.3 / 2.4 均验收通过）
-- **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合已实现并提交（9cd1385、46191c7），等用户验收后勾 ROADMAP**
-- Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）
-- Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）
-- Step 3.2 全屏触控手势 → Step 3.3 弹幕/PiP → Step 3.4 画质增强
+- **详情页原地播放 + 播放源自动接力 + 线路 chip 站点名**：2026-11-07 用户验收通过并已提交，见 10.4 / 10.5。
+- **Step 3.2 手势 / Step 3.3 前半 PiP / 跨站聚合**：已实现并提交（9cd1385、46191c7），仍等用户逐条真机验收后再勾 ROADMAP。
+- 追剧 / 播放历史真持久化（见上面已知问题 8，无外部依赖、不碰 A/B 层与转场）。
+- Step 3.1 双核解码（先把上面第 1 条占位开关处理掉，再谈真内核）。
+- Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）。

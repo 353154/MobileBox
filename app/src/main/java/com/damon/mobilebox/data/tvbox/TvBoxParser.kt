@@ -828,7 +828,7 @@ object TvBoxParser {
     /**
      * 将苹果 CMS 视频条目转换为 UI 播放器兼容的 VideoDetailData 结构
      */
-    fun parseMacCmsVodToDetail(vod: MacCmsVod): VideoDetailData {
+    fun parseMacCmsVodToDetail(vod: MacCmsVod, siteName: String = ""): VideoDetailData {
         val routes = mutableListOf<VideoRoute>()
         val playFromList = vod.vodPlayFrom?.split("$$$") ?: emptyList()
         val playUrlList = vod.vodPlayUrl?.split("$$$") ?: emptyList()
@@ -868,7 +868,8 @@ object TvBoxParser {
                         routeId = "route_$i",
                         routeName = fromName,
                         tag = "直连",
-                        episodes = episodeList
+                        episodes = episodeList,
+                        siteName = siteName
                     )
                 )
             }
@@ -880,6 +881,7 @@ object TvBoxParser {
                     routeId = "route_default",
                     routeName = "默认线路",
                     tag = "直连",
+                    siteName = siteName,
                     episodes = listOf(
                         VideoEpisode(
                             episodeId = 1,

@@ -49,6 +49,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -70,6 +72,7 @@ import androidx.media3.ui.PlayerView
 import com.damon.mobilebox.data.tvbox.LiveChannel
 import com.damon.mobilebox.data.tvbox.LiveChannelGroup
 import com.damon.mobilebox.data.tvbox.TvBoxParser
+import com.damon.mobilebox.ui.components.AmbientBackdrop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -87,7 +90,47 @@ fun MobileVideoPlayer(
     liveStreamUrls: List<String> = emptyList(),
     channelGroups: List<LiveChannelGroup> = emptyList(),
     currentChannel: LiveChannel? = null,
-    onSelectChannel: ((LiveChannel) -> Unit)? = null
+    onSelectChannel: ((LiveChannel) -> Unit)? = null,
+    /**
+     * 视频首帧真正画到屏幕上时回调。
+     * 详情页原地播放靠它触发「海报 → 视频」的交叉淡入：在此之前容器里只有黑场，
+     * 提前把海报淡掉会先露出一段黑屏（免费源起播常要 1~2s，那段黑屏非常难看）。
+     * 换集/切线路会再次触发，调用方需自行幂等。
+     */
+    onFirstFrameRendered: (() -> Unit)? = null,
+    /**
+     * 播放器底色。默认纯黑（横屏全屏、直播页）。
+     * 详情页原地播放传页面暗场色：加载态与周围背景同色，海报淡出时画面是「整体暗下去」，
+     * 而不是在暗场里抠出一块比周围更黑的矩形（那是突兀感的主要来源之一）。
+     */
+    backdrop: Color = Color.Black,
+    /**
+     * 加载态背景图（一般是海报 URL）。
+     *
+     * 首帧画面出来之前，视频区域显示这张图的高斯模糊版本，而不是一块死黑 ——
+     * 观感是「视频还没到，先把海报铺满并对焦虚化」，比纯黑自然得多。
+     * 传空则回落到 Bing 每日壁纸本地缓存（与直播预览共用 [BingWallpaperStore]）。
+     */
+    backdropImageUrl: String? = null,
+    /**
+     * 首帧前是否单独铺一层模糊背景。
+     *
+     * 默认 true：直播 / 横屏全屏播放需要自己的加载态背景。
+     * 详情页原地播放传 false —— 整页已经有一张铺到视频下沿的氛围底，画框直接用
+     * [backdrop] 那个颜色即可，不必再单独加载一张模糊海报（两层裁切不同反而会出现接缝）。
+     */
+    showAmbientBackdrop: Boolean = true,
+    /**
+     * 非直播起播/播放失败时上报给外层，由外层（详情页）按顺序自动切下一个播放源。
+     * 传了它就不再弹播放器自己的错误卡片；外层所有源都试完才会传 [fatalError]。
+     */
+    onSourceFailed: (() -> Unit)? = null,
+    /** 加载态提示，例如「正在尝试 非凡影视·FEIFAN 直连」。首帧出来后自动收起。 */
+    loadingHint: String? = null,
+    /** 所有播放源都失败后的终态文案：只显示「图标 + 文案」，无卡片、无遮罩、无按钮。 */
+    fatalError: String? = null,
+    /** 手动重试同一个源时递增：streamUrl 没变也要强制重新 prepare。 */
+    reloadToken: Int = 0
 ) {
     val context = LocalContext.current
     val activity = remember(context) { findActivity(context) }
@@ -114,8 +157,17 @@ fun MobileVideoPlayer(
             }
     }
 
+    // 这几个回调跟随最新 lambda（listener 只在 DisposableEffect(exoPlayer) 里注册一次，
+    // 直接捕获会永远指向首次组合的那份闭包，换源后拿到的是过期的线路列表/状态）。
+    val firstFrameCallback by rememberUpdatedState(onFirstFrameRendered)
+    val sourceFailedCallback by rememberUpdatedState(onSourceFailed)
+    val fatalErrorState by rememberUpdatedState(fatalError)
+
     var isPlaying by remember { mutableStateOf(true) }
     var isLoading by remember { mutableStateOf(true) }
+    // 首帧是否已经真正画到屏幕上：模糊海报背景靠它收起，中央播放/快进/快退也靠它决定要不要露出。
+    // 不能用 isLoading —— 缓冲、seek 时它会反复变 true，会让背景和按钮闪。
+    var hasFirstFrame by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var bufferedPosition by remember { mutableLongStateOf(0L) }
@@ -124,6 +176,10 @@ fun MobileVideoPlayer(
     var activeStreamUrl by remember { mutableStateOf(streamUrl) }
     var playbackError by remember { mutableStateOf<String?>(null) }
     var retryCount by remember { mutableIntStateOf(0) }
+    // 同一个播放源可能连着报两次错（音/视频轨各自抛），只上报一次，
+    // 否则外层会在同一帧里连跳两条线路。用 activeStreamUrl（真正送进 prepare 的 URL）
+    // 判重：换源重组后新 prepare 还没跑完时，旧流再抛错仍能被挡住。
+    var lastReportedErrorUrl by remember { mutableStateOf<String?>(null) }
 
     // ---- 同频道多线路自动切换 ----
     // live.txt 里同一个频道通常配了 3 条以上线路，deduplicateGroups 已把它们聚合成 urls。
@@ -149,10 +205,11 @@ fun MobileVideoPlayer(
         activeStreamUrl = activeSourceUrl
         retryCount = 0
     }
-    LaunchedEffect(streamUrl) {
+    LaunchedEffect(streamUrl, reloadToken) {
         sourceIndexState.intValue = 0
         playbackStateState.intValue = Player.STATE_IDLE
         switchNotice = null
+        lastReportedErrorUrl = null
     }
     // 切换提示 2.6 秒后自动消失
     LaunchedEffect(switchNotice) {
@@ -237,9 +294,12 @@ fun MobileVideoPlayer(
     }
 
     // 当视频流发生变化时，更新播放源 (支持嗅探解析与协议降级重试)
-    LaunchedEffect(activeSourceUrl, retryCount) {
+    // reloadToken：外层手动重试同一个源时 streamUrl 不变，也要重新 prepare 一次。
+    LaunchedEffect(activeSourceUrl, retryCount, reloadToken) {
         isLoading = true
         playbackError = null
+        // 换源/换集：重新回到「模糊海报 + 转圈」的加载态
+        hasFirstFrame = false
 
         // 1. 自动嗅探/提取网页分享页背后的真实直连 m3u8 流
         var finalUrl = activeSourceUrl.trim()
@@ -269,6 +329,13 @@ fun MobileVideoPlayer(
     // 播放器状态事件监听
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                hasFirstFrame = true
+                // 用 rememberUpdatedState 包一层：listener 只在 exoPlayer 变化时重建一次，
+                // 闭包里直接捕获 lambda 会永远指向首次组合的那一份（换集后回调打到旧页面上）。
+                firstFrameCallback?.invoke()
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 playbackStateState.intValue = playbackState
                 isLoading = playbackState == Player.STATE_BUFFERING
@@ -302,19 +369,33 @@ fun MobileVideoPlayer(
                     retryCount++
                     return
                 }
-                val message = when {
-                    cause is androidx.media3.exoplayer.source.UnrecognizedInputFormatException -> "媒体流编码格式无法识别，请切换线路"
-                    cause is javax.net.ssl.SSLException -> "安全握手失败 (SSL)，请尝试切换线路"
-                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败，请检查网络"
-                    error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "视频资源不存在 (404)"
-                    else -> "播放失败 (${error.errorCodeName})"
-                }
+                // 对用户只说结论和下一步：不管是编码不识别、404 还是网络问题，
+                // 他这一层能做的动作只有「换一个源」，不需要知道 errorCode。
+                // 原始原因写进 logcat，排查时看 MB-PLAY 这条。
+                val message = "播放失败，请更换播放源。"
+                Log.w(
+                    "MB-PLAY",
+                    "播放失败 code=${error.errorCodeName} cause=${cause?.javaClass?.simpleName} msg=${cause?.message}"
+                )
                 // 直播：还有备用线路就直接跳下一条，不打断观看
                 if (isLive && currentLiveSources.size > 1) {
                     switchToNextSource("线路报错")
-                } else {
-                    playbackError = message
+                    return
                 }
+                // 详情页原地播放：把失败上报给外层，由外层按顺序自动切下一个播放源。
+                // 外层全部试完会置 fatalError；此后即使 ExoPlayer 再抛错也不继续跳。
+                val callback = sourceFailedCallback
+                // 终态失败后 ExoPlayer 可能还在抛错，此时既不要再换源也不要污染内部错误态
+                if (fatalErrorState != null) return
+                // 用「真正送进 prepare 的 URL」判重：换源重组后新 prepare 还没跑完时，
+                // 旧流若再抛一次错，activeStreamUrl 仍是旧值，会被这里挡掉，不会连跳两条线路。
+                if (callback != null && lastReportedErrorUrl != activeStreamUrl) {
+                    lastReportedErrorUrl = activeStreamUrl
+                    Log.d("MB-PLAY", "播放源失败，交外层自动换源：$title")
+                    callback.invoke()
+                    return
+                }
+                playbackError = message
             }
         }
         exoPlayer.addListener(listener)
@@ -334,6 +415,15 @@ fun MobileVideoPlayer(
             PipController.playerActive = false
             Log.d("MB-PIP", "播放器销毁 playerActive=false")
         }
+    }
+
+    // 播放失败 = 没有可看的内容，立刻取消 PiP 资格：一个只会显示「播放失败」的小窗
+    // 对用户毫无意义，按 Home 缩成死小窗只会让人以为 App 坏了（用户 14:39 反馈）。
+    // 重试成功后 playbackError 归 null，这里自动恢复资格。
+    LaunchedEffect(playbackError, fatalError) {
+        val playable = playbackError == null && fatalError == null
+        PipController.playerActive = playable
+        Log.d("MB-PIP", "playbackError=${playbackError != null} fatal=${fatalError != null} -> playerActive=$playable")
     }
 
     // 周期性轮询播放进度
@@ -451,7 +541,7 @@ fun MobileVideoPlayer(
 
     Box(
         modifier = modifier
-            .background(Color.Black)
+            .background(backdrop)
             .pointerInput(isLandscape, isLive, isChannelDrawerOpen) {
                 detectTapGestures(
                     onTap = { offset ->
@@ -618,6 +708,26 @@ fun MobileVideoPlayer(
             modifier = Modifier.fillMaxSize()
         )
 
+        // ---- 加载态背景 ----
+        // 详情页原地播放（showAmbientBackdrop=false）不铺这层：整页氛围底已经取好色，
+        // 画框直接用 [backdrop] 同色即可，看起来是「一整块背景连续到视频下沿」。
+        // 直播 / 横屏仍保留模糊图：只在「首帧还没画出来」时存在，出画面后 520ms 淡出。
+        // 判断用 hasFirstFrame 而不是 isLoading：缓冲/seek 时 isLoading 会反复 true，背景会闪。
+        val showLoadingBackdrop = showAmbientBackdrop && !hasFirstFrame && fatalError == null
+        val loadingBackdropAlpha by animateFloatAsState(
+            targetValue = if (showLoadingBackdrop) 1f else 0f,
+            animationSpec = tween(if (showLoadingBackdrop) 90 else 520),
+            label = "loadingBackdrop"
+        )
+        if (showAmbientBackdrop && loadingBackdropAlpha > 0.01f) {
+            AmbientBackdrop(
+                imageUrl = backdropImageUrl,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = loadingBackdropAlpha }
+            )
+        }
+
         // 横屏直播边缘滑动呼出检测区 (手指从屏幕最左侧向右滑入呼出抽屉)
         if (isLandscape && isLive && !isChannelDrawerOpen) {
             Box(
@@ -636,14 +746,34 @@ fun MobileVideoPlayer(
             )
         }
 
-        // 中间缓冲加载菊花指示器
-        if (isLoading && playbackError == null) {
-            CircularProgressIndicator(
-                color = MaterialTheme.colorScheme.primary,
+        // 加载态：转圈 + 「正在尝试 <真实播放源名>」。首帧出来后提示自动收起，
+        // 之后缓冲再转圈时不再重复提示；播放控件依旧一个都不露（用户 15:04 明确要求）。
+        if (fatalError == null && isLoading && playbackError == null) {
+            Column(
                 modifier = Modifier
-                    .size(48.dp)
                     .align(Alignment.Center)
-            )
+                    .padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(
+                    color = Color.White.copy(alpha = 0.9f),
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(44.dp)
+                )
+                if (loadingHint != null && !hasFirstFrame) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = loadingHint ?: "",
+                        color = Color.White.copy(alpha = 0.82f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 280.dp)
+                    )
+                }
+            }
         }
 
         // 手势提示（亮度 / 音量 / 进度 / 暂停）：拖动中显示，松手 450ms 后淡出
@@ -689,47 +819,100 @@ fun MobileVideoPlayer(
             }
         }
 
-        // 播放失败提示与重试面板
-        if (playbackError != null) {
+        // 所有播放源都试完仍失败：不要黑框、不要卡片、不要按钮，只留「失败图标 + 一句提示」。
+        // 换源直接点详情页下方的播放源 chips，退出用系统返回键（详情页 BackHandler 走逆过程）。
+        if (fatalError != null) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.85f))
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
                     imageVector = Icons.Default.ErrorOutline,
-                    contentDescription = "错误",
+                    contentDescription = "播放失败",
                     tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(44.dp)
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = playbackError ?: "播放异常",
-                    color = Color.White,
+                    text = fatalError ?: "",
+                    color = Color.White.copy(alpha = 0.92f),
                     fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center
                 )
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        onClick = {
-                            playbackError = null
-                            retryCount++
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        shape = RoundedCornerShape(8.dp)
+            }
+        }
+
+        // 直播 / 横屏的错误卡片（带重试与返回），详情页自动换源接力不会走到这里。
+        if (fatalError == null && playbackError != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    // 只压一层薄暗：错误卡自身有底色，画面微微透出来更像「播放器还在，只是放不了」
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // 用一张独立卡片把「图标 + 原因 + 操作」收成一个整体。
+                // 之前是散在全屏 Column 里，正好被控制条中央的播放/暂停大按钮压住（用户 14:39 反馈）。
+                Surface(
+                    color = Color(0xFF161B22).copy(alpha = 0.97f),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.widthIn(max = 320.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("重试播放", fontSize = 13.sp)
-                    }
-                    OutlinedButton(
-                        onClick = onBackClick,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                    ) {
-                        Text("返回详情", fontSize = 13.sp)
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = "错误",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "播放失败",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = playbackError ?: "播放异常",
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = {
+                                    playbackError = null
+                                    retryCount++
+                                },
+                                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("重试播放", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            }
+                            OutlinedButton(
+                                onClick = onBackClick,
+                                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                            ) {
+                                Text("返回详情", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
                     }
                 }
             }
@@ -737,7 +920,10 @@ fun MobileVideoPlayer(
 
         // 浮层自定义控制器
         AnimatedVisibility(
-            visible = areControlsVisible && !isChannelDrawerOpen,
+            // 首帧出来之前整条控制条不出现：加载态只需要「模糊底图 + 转圈」，
+            // 播放/暂停、快进快退、进度条此刻全是 0，露出来只会碍眼（用户 15:04 明确要求）。
+            visible = areControlsVisible && !isChannelDrawerOpen &&
+                playbackError == null && fatalError == null && hasFirstFrame,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -833,7 +1019,7 @@ fun MobileVideoPlayer(
                     }
                 }
 
-                // 2. 中央大播放/暂停控制行
+                // 2. 中央播放/快进/快退控制行
                 Row(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalArrangement = Arrangement.spacedBy(32.dp),

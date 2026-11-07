@@ -530,7 +530,7 @@ object TvBoxRepository {
                         ).getOrNull()?.list.orEmpty()
                             .map { vod ->
                                 SearchHit(
-                                    detail = TvBoxParser.parseMacCmsVodToDetail(vod),
+                                    detail = TvBoxParser.parseMacCmsVodToDetail(vod, site.name),
                                     siteKey = site.key,
                                     siteName = site.name
                                 )
@@ -580,7 +580,7 @@ object TvBoxRepository {
                             callTimeoutMs = 6_000
                         ).getOrNull()?.list.orEmpty()
                             .mapNotNull { vod ->
-                                val detail = TvBoxParser.parseMacCmsVodToDetail(vod)
+                                val detail = TvBoxParser.parseMacCmsVodToDetail(vod, site.name)
                                 if (detail.title.trim() == word && detail.routes.isNotEmpty()) {
                                     site to detail
                                 } else {
@@ -689,7 +689,7 @@ object TvBoxRepository {
             if (result.isSuccess) {
                 val response = result.getOrNull()
                 val rawVodList = response?.list ?: emptyList()
-                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it) }
+                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it, site.name) }
                 categoryVodCache[cacheKey] = convertedList
                 // 只有当前请求的 key 依然匹配时才更新流，防止并发乱序
                 if (currentCategoryKey == cacheKey) {
@@ -725,7 +725,7 @@ object TvBoxRepository {
             if (result.isSuccess) {
                 val response = result.getOrNull()
                 val rawVodList = response?.list ?: emptyList()
-                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it) }
+                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it, site.name) }
                 Result.success(convertedList)
             } else {
                 Result.failure(result.exceptionOrNull() ?: Exception("拉取分类影片失败"))
@@ -787,7 +787,7 @@ object TvBoxRepository {
             if (result.isSuccess) {
                 val response = result.getOrNull()
                 val rawVodList = response?.list ?: emptyList()
-                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it) }
+                val convertedList = rawVodList.map { TvBoxParser.parseMacCmsVodToDetail(it, site.name) }
 
                 // 内容相同则不发射新值：避免多余刷新让 LazyVerticalGrid 整表重组、海报抖动
                 if (convertedList.isNotEmpty() && convertedList != _realVodList.value) {

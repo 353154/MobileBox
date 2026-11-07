@@ -23,12 +23,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -218,6 +222,77 @@ fun BingWallpaperBackdrop(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF0B1220).copy(alpha = 0.18f))
+        )
+    }
+}
+
+/**
+ * 播放氛围底：从海报（或 Bing 每日壁纸）「取色」铺满一块区域。
+ *
+ * 图源规则与播放器首帧前的加载态完全一致：
+ * 1. 有海报 URL 就用它的高斯模糊版（复用 [rememberRetryableImageRequest] 做 http 降级 +
+ *    CDN 拦截页重试，采集站 CDN 的 https 与 text/html 拦截页失败率很高）；
+ * 2. 没有海报、或海报彻底加载失败（painter.state = Error）时回落到本地缓存的 Bing 壁纸；
+ * 3. 放大到裁剪区外再模糊，避免大半径模糊的边缘 alpha 衰减露出底色；
+ * 4. 最后压一层带垂直渐变的暗罩 —— 只留下图的色彩氛围，不出现可辨认的图案，
+ *    也保证叠在其上的浅色文字始终可读。
+ *
+ * 详情页播放态用它铺满视频下方的内容区（原来是一整块纯黑），播放器加载态用它铺满
+ * 16:9 画框，两者是同一套取色逻辑，调色只要改这里。
+ */
+@Composable
+fun AmbientBackdrop(
+    imageUrl: String?,
+    modifier: Modifier = Modifier,
+    blurRadius: Dp = 18.dp,
+    scale: Float = 1.18f,
+    dimColor: Color = Color(0xFF0A0E17),
+    /** 底部暗罩浓度；靠视频的一侧会自动再加 0.16，用于衔接 16:9 画框的深色底 */
+    dimAlpha: Float = 0.34f,
+    /** 壁纸是否轮播。详情页静态背景传 false，避免内容区一直在动 */
+    wallpaperActive: Boolean = true
+) {
+    val context = LocalContext.current
+    val request = rememberRetryableImageRequest(
+        context, imageUrl?.toLoadableImageUrl().orEmpty()
+    )
+    val painter = rememberAsyncImagePainter(
+        model = if (imageUrl.isNullOrBlank()) null else request
+    )
+    val posterFailed = painter.state is AsyncImagePainter.State.Error
+
+    Box(modifier = modifier) {
+        if (!imageUrl.isNullOrBlank() && !posterFailed) {
+            Image(
+                painter = painter,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    // 放大到裁剪区外：模糊后边缘 alpha 衰减会落在容器外
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .blur(blurRadius)
+            )
+        } else {
+            BingWallpaperBackdrop(
+                active = wallpaperActive,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            dimColor.copy(alpha = (dimAlpha + 0.16f).coerceAtMost(1f)),
+                            dimColor.copy(alpha = dimAlpha)
+                        )
+                    )
+                )
         )
     }
 }

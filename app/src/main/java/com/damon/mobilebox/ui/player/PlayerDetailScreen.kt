@@ -250,12 +250,12 @@ fun PlayerDetailScreen(
                                             )
                                             .clickable {
                                                 selectedRouteIndex = index
-                                                onShowToast("已切换至线路：${route.routeName}")
+                                                onShowToast("已切换至线路：${route.displayName()}")
                                             }
                                             .padding(horizontal = 12.dp, vertical = 6.dp)
                                     ) {
                                         Text(
-                                            text = route.routeName,
+                                            text = route.displayName(),
                                             fontSize = 13.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                             color = if (isSelected) Color.White else Color.White.copy(alpha = 0.75f)
