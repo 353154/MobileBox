@@ -13,7 +13,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Tv
@@ -206,13 +205,12 @@ fun ProfileScreen(
         // 历史观看模块
         item { HistorySection(history = history, onOpenList = onOpenList) }
 
-        // 待看与功能网格模块
+        // 我的列表入口：历史观看 / 追剧清单 / 在看剧集，三块共用同一套卡片样式
         item {
-            WatchlistAndGridSection(
-                favorites = favorites,
-                history = history,
-                onOpenList = onOpenList
-            )
+            Column {
+                WatchlistSection(favorites = favorites, history = history, onOpenList = onOpenList)
+                WatchingSection(history = history, onOpenList = onOpenList)
+            }
         }
     }
 }
@@ -606,10 +604,11 @@ fun StatBarChart(
  * 用一枚主题色浅底胶囊把“下一步该做什么”显性化。
  */
 @Composable
-private fun EmptyStateCta(label: String) {
+private fun EmptyStateCta(label: String, onClick: (() -> Unit)? = null) {
     Surface(
         shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+        modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -653,11 +652,34 @@ fun HistorySection(
         val watched = if (rec.watchedMs > 0L) "累计 ${formatWatchDuration(rec.watchedMs)}" else ""
         listOf(progress, watched).filter { it.isNotBlank() }.joinToString(" · ")
     }.orEmpty()
+    ProfileSectionCard(
+        title = "历史观看",
+        icon = Icons.Default.History,
+        primary = latestTitle.ifBlank { "暂无未播完的记录" },
+        secondary = latestMeta,
+        cta = "去发现",
+        onClick = { onOpenList(WatchListType.HISTORY) }
+    )
+}
+
+/**
+ * 「我的」页三个列表入口共用的卡片骨架：标题 + 圆形图标 + 主副两行 + CTA 胶囊。
+ * 历史观看 / 追剧清单 / 在看剧集都走这一份，保证三者视觉与间距完全一致。
+ */
+@Composable
+private fun ProfileSectionCard(
+    title: String,
+    icon: ImageVector,
+    primary: String,
+    secondary: String,
+    cta: String,
+    onClick: () -> Unit
+) {
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
-        Text("历史观看", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
         Spacer(modifier = Modifier.height(8.dp))
         Card(
-            onClick = { onOpenList(WatchListType.HISTORY) },
+            onClick = onClick,
             // 高度自适应：两行文字 + 系统字体放大时，固定 68dp 会把第二行裁掉
             modifier = Modifier
                 .fillMaxWidth()
@@ -680,7 +702,7 @@ fun HistorySection(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Default.History,
+                            imageVector = icon,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
@@ -690,17 +712,17 @@ fun HistorySection(
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = latestTitle.ifBlank { "暂无未播完的记录" },
+                        text = primary,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (latestMeta.isNotBlank()) {
+                    if (secondary.isNotBlank()) {
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = latestMeta,
+                            text = secondary,
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -709,160 +731,78 @@ fun HistorySection(
                     }
                 }
                 // 空状态行动号召：把原本纯说明性的灰字收敛为一枚明确的 CTA 胶囊
-                EmptyStateCta(label = "去发现")
+                EmptyStateCta(label = cta, onClick = onClick)
             }
         }
     }
 }
 
+/**
+ * 追剧清单：合并了原来独立的「我的收藏」与「待看片单」。
+ * 数据源仍是 WatchStore.favorites（唯一存储），「还没开始看」的部分只作为副标题提示，
+ * 不再单独占一个入口。
+ */
 @Composable
-fun WatchlistAndGridSection(
+fun WatchlistSection(
     favorites: List<FavoriteItem> = emptyList(),
     history: List<WatchRecord> = emptyList(),
     onOpenList: (WatchListType) -> Unit = {}
 ) {
-    // 待看 = 收藏了但还没有任何播放记录；在看 = 有播放记录的不同影片数。
-    val watchedIds = remember(history) { history.filterNot { it.isLive }.map { it.videoId }.toSet() }
-    val pendingCount = favorites.count { it.videoId !in watchedIds }
-    val watchingCount = watchedIds.size
-    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onOpenList(WatchListType.PENDING) }
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("待看片单", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-            Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        // 待看卡片 (紧凑瘦身，消除大面积留白与空洞感，统一收敛交互)
-        Card(
-            onClick = { onOpenList(WatchListType.PENDING) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(68.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Tv,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(14.dp))
-                Text(
-                    text = if (pendingCount > 0) "$pendingCount 部待看影片" else "暂无待看影片",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f)
-                )
-                EmptyStateCta(label = "去追剧")
-            }
-        }
-        
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 收藏与在看网格：改成「图标 + 数字 + 标签」横排。
-        // 原来是 72dp 固定高硬塞 26sp 大字 + 12sp 小字，系统字体一放大就被卡片裁掉
-        // （用户 16:38 反馈「字体被外围元素挡住、显示很不完整」），现在高度自适应。
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            WatchCountCard(
-                count = favorites.size,
-                label = "我的收藏",
-                icon = Icons.Default.Favorite,
-                onClick = { onOpenList(WatchListType.FAVORITES) },
-                modifier = Modifier.weight(1f)
-            )
-            WatchCountCard(
-                count = watchingCount,
-                label = "在看剧集",
-                icon = Icons.Default.PlayArrow,
-                onClick = { onOpenList(WatchListType.WATCHING) },
-                modifier = Modifier.weight(1f)
-            )
-        }
+    val unwatched = remember(favorites, history) {
+        val watchedIds = history.filterNot { it.isLive }.map { it.videoId }.toSet()
+        favorites.count { it.videoId !in watchedIds }
     }
+    val primary = if (favorites.isEmpty()) "还没有追剧的影片" else "${favorites.size} 部影片"
+    val secondary = when {
+        favorites.isEmpty() -> "在详情页点「追剧」就会出现在这里"
+        unwatched > 0 -> "$unwatched 部还没开始看"
+        else -> "全部已开播"
+    }
+    ProfileSectionCard(
+        title = "追剧清单",
+        icon = Icons.Default.Tv,
+        primary = primary,
+        secondary = secondary,
+        cta = "查看全部",
+        onClick = { onOpenList(WatchListType.FAVORITES) }
+    )
 }
 
+/**
+ * 在看剧集：与「历史观看」同一套卡片样式，展示最近一条点播记录（直播不计入）。
+ * 原来这里是底部一枚纯数字按钮，信息量为零；现在给出片名、集数、进度与总集数。
+ */
 @Composable
-private fun WatchCountCard(
-    count: Int,
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+fun WatchingSection(
+    history: List<WatchRecord> = emptyList(),
+    onOpenList: (WatchListType) -> Unit = {}
 ) {
-    Card(
-        onClick = onClick,
-        modifier = modifier
-            .heightIn(min = 84.dp)
-            .wrapContentHeight(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                modifier = Modifier.size(38.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+    val latest = remember(history) { history.firstOrNull { !it.isLive } }
+    val primary = latest?.let { rec ->
+        listOf(rec.title, rec.episodeName).filter { it.isNotBlank() }.joinToString(" · ")
+    }.orEmpty()
+    val secondary = latest?.let { rec ->
+        val progress = if (rec.positionMs > 0L) {
+            val position = formatMediaTime(rec.positionMs)
+            if (rec.durationMs > 0L) {
+                "看到 $position / ${formatMediaTime(rec.durationMs)}"
+            } else {
+                "看到 $position"
             }
-            Spacer(modifier = Modifier.width(10.dp))
-            Column {
-                Text(
-                    text = "$count",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    softWrap = false
-                )
-                Text(
-                    text = label,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
-        }
-    }
+        } else ""
+        val episodes = history
+            .filter { !it.isLive && it.videoId == rec.videoId }
+            .distinctBy { it.episodeId }
+            .size
+            .let { if (it > 1) "共 $it 集" else "" }
+        listOf(progress, episodes).filter { it.isNotBlank() }.joinToString(" · ")
+    }.orEmpty()
+    ProfileSectionCard(
+        title = "在看剧集",
+        icon = Icons.Default.PlayArrow,
+        primary = primary.ifBlank { "还没有在看的影片" },
+        secondary = secondary.ifBlank { "有播放记录后会显示在这里" },
+        cta = "查看全部",
+        onClick = { onOpenList(WatchListType.WATCHING) }
+    )
 }

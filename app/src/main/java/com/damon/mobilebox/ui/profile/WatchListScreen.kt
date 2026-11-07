@@ -66,11 +66,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 「我的」页四个入口共用一个列表页，靠这个枚举区分数据源与标题。 */
+/** 「我的」页三个入口共用一个列表页，靠这个枚举区分数据源与标题。 */
 enum class WatchListType(val title: String) {
     HISTORY("观看历史"),
-    FAVORITES("我的收藏"),
-    PENDING("待看片单"),
+    FAVORITES("追剧清单"),
     WATCHING("在看剧集")
 }
 
@@ -160,18 +159,7 @@ private fun buildRows(
                 videoId = f.videoId,
                 title = f.title.ifBlank { "未知影片" },
                 posterUrl = f.posterUrl,
-                detailLine = if (f.videoId in watchedIds) "已有观看记录" else "尚未观看",
-                metaLine = joinNonBlank("加入于", formatStamp(f.addedAt))
-            )
-        }
-
-        WatchListType.PENDING -> favorites.filter { it.videoId !in watchedIds }.map { f ->
-            WatchListRow(
-                key = "pending_${f.videoId}",
-                videoId = f.videoId,
-                title = f.title.ifBlank { "未知影片" },
-                posterUrl = f.posterUrl,
-                detailLine = "收藏后尚未播放",
+                detailLine = if (f.videoId in watchedIds) "已有观看记录" else "收藏后尚未播放",
                 metaLine = joinNonBlank("加入于", formatStamp(f.addedAt))
             )
         }
@@ -200,12 +188,12 @@ private fun buildRows(
     }
 }
 
-/** 四个列表的删除语义不同：派生列表必须落到它真正的存储表上。 */
+/** 三个列表的删除语义不同：派生列表必须落到它真正的存储表上。 */
 private fun removeRow(type: WatchListType, row: WatchListRow) {
     when (type) {
         WatchListType.HISTORY -> WatchStore.removeHistoryRecord(row.resumeRecord?.id ?: row.key)
-        // 待看 = 收藏里没播过的那些，删掉一条就是取消这一部的收藏
-        WatchListType.FAVORITES, WatchListType.PENDING -> WatchStore.removeFavorite(row.videoId)
+        // 追剧清单 = 收藏表本身，删掉一条就是取消这一部的追剧
+        WatchListType.FAVORITES -> WatchStore.removeFavorite(row.videoId)
         // 在看 = 历史按影片聚合，删掉一部就是清掉它全部点播记录
         WatchListType.WATCHING -> WatchStore.removeWatching(row.videoId)
     }
@@ -215,7 +203,6 @@ private fun clearRows(type: WatchListType) {
     when (type) {
         WatchListType.HISTORY -> WatchStore.clearHistory()
         WatchListType.FAVORITES -> WatchStore.clearFavorites()
-        WatchListType.PENDING -> WatchStore.clearPending()
         WatchListType.WATCHING -> WatchStore.clearWatching()
     }
 }
@@ -223,9 +210,8 @@ private fun clearRows(type: WatchListType) {
 /** 派生列表的清空会连带影响另一张表，确认文案必须说清楚。 */
 private fun clearConfirmMessage(type: WatchListType, count: Int): String = when (type) {
     WatchListType.HISTORY -> "将清空全部 $count 条观看记录（含直播记录），不可恢复。"
-    WatchListType.FAVORITES -> "将清空全部 $count 部收藏，不可恢复。"
-    WatchListType.PENDING -> "将从收藏中移除 $count 部尚未观看的影片；已开播的收藏会保留。"
-    WatchListType.WATCHING -> "将清空 $count 部影片的全部观看记录；直播记录与收藏会保留。"
+    WatchListType.FAVORITES -> "将清空全部 $count 部追剧影片（含已开播的），不可恢复。"
+    WatchListType.WATCHING -> "将清空 $count 部影片的全部观看记录；直播记录与追剧清单会保留。"
 }
 
 /**
@@ -351,8 +337,7 @@ fun WatchListScreen(
                 Text(
                     text = when (type) {
                         WatchListType.HISTORY -> "还没有观看记录"
-                        WatchListType.FAVORITES -> "还没有收藏影片"
-                        WatchListType.PENDING -> "没有待看影片"
+                        WatchListType.FAVORITES -> "还没有追剧的影片"
                         WatchListType.WATCHING -> "还没有在看的影片"
                     },
                     fontSize = 13.sp,
@@ -372,8 +357,8 @@ fun WatchListScreen(
                         onRemove = {
                             removeRow(type, row)
                             val tip = when (type) {
-                                WatchListType.PENDING -> "已从收藏移除"
                                 WatchListType.WATCHING -> "已删除该片全部观看记录"
+                                WatchListType.FAVORITES -> "已移出追剧清单"
                                 else -> "已删除"
                             }
                             Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()

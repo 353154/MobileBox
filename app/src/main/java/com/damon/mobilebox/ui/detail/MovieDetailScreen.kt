@@ -400,6 +400,20 @@ fun MovieDetailScreen(
     val favorites by WatchStore.favorites.collectAsState()
     val isFavorite = favorites.any { it.videoId == movieId }
 
+    // 「追剧」已从底部工具条上移：浏览态与「立即播放」并排，播放态在「选集」标题右侧，
+    // 两处共用这一份点击逻辑与提示文案。
+    val toggleFavorite = {
+        WatchStore.toggleFavorite(
+            FavoriteItem(
+                videoId = movieId,
+                title = finalData.title,
+                posterUrl = effectivePosterUrl
+            )
+        )
+        // 这里读的是点击前的状态：true 表示本次操作是取消。
+        onShowToast(if (isFavorite) "已取消追剧" else "已加入追剧清单")
+    }
+
     val routeFallbackSiteName = remember { TvBoxRepository.selectedSite.value?.name.orEmpty() }
     /** 与播放源 chip 用同一个取名字函数，保证「正在尝试 X」里的 X 就是 chip 上那行字 */
     fun routeLabel(index: Int): String =
@@ -843,7 +857,15 @@ fun MovieDetailScreen(
                             if (playingNow) {
                                 // 单集（电影）也要有：只显示一个「正片」chip，不能让用户以为选集消失了
                                 if (currentRoute.episodes.isNotEmpty()) {
-                                    SectionTitle("选集")
+                                    // 播放态没有「立即播放」那一行，追剧跟着选集标题走：
+                                    // 只占标题右侧，不新增行高，也不打乱「播放器 → 选集 → 播放源」的顺序。
+                                    SectionTitle("选集", trailing = {
+                                        FavoriteToggle(
+                                            contained = false,
+                                            isFavorite = isFavorite,
+                                            onClick = toggleFavorite
+                                        )
+                                    })
                                     Spacer(modifier = Modifier.height(12.dp))
                                     EpisodeChips(
                                         episodes = currentRoute.episodes,
@@ -913,39 +935,49 @@ fun MovieDetailScreen(
                             ) {
                                 SectionTitle("播放资源")
                                 Spacer(modifier = Modifier.height(12.dp))
-                                Button(
-                                    onClick = {
-                                        val firstEp = currentRoute.episodes.firstOrNull()
-                                        if (firstEp != null) {
-                                            startPlayback(firstEp)
-                                            onPlayEpisode(firstEp)
-                                        }
-                                    },
-                                    shape = RoundedCornerShape(26.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        // 容器是固定的浅灰，与主题无关；文字必须固定用近黑，
-                                        // 不能跟着 B 层动态字色走（深色主题下会变成白字压浅灰）。
-                                        containerColor = Color(0xFFE4E7EE),
-                                        contentColor = BTextPrimary
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.PlayArrow,
-                                        contentDescription = null,
-                                        tint = BTextPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "立即播放 · ${
-                                            currentRoute.episodes.firstOrNull()?.let { formatEpisodeName(it.name) }
-                                                ?: "第 1 集"
-                                        }",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = BTextPrimary
+                                // 「追剧」紧贴「立即播放」：同一部片的两个主操作并排，
+                                // 底部操作行回到纯工具条（缓存 / 投屏 / 分享）。
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Button(
+                                        onClick = {
+                                            val firstEp = currentRoute.episodes.firstOrNull()
+                                            if (firstEp != null) {
+                                                startPlayback(firstEp)
+                                                onPlayEpisode(firstEp)
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(26.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            // 容器是固定的浅灰，与主题无关；文字必须固定用近黑，
+                                            // 不能跟着 B 层动态字色走（深色主题下会变成白字压浅灰）。
+                                            containerColor = Color(0xFFE4E7EE),
+                                            contentColor = BTextPrimary
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            tint = BTextPrimary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "立即播放 · ${
+                                                currentRoute.episodes.firstOrNull()?.let { formatEpisodeName(it.name) }
+                                                    ?: "第 1 集"
+                                            }",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BTextPrimary
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    FavoriteToggle(
+                                        contained = true,
+                                        isFavorite = isFavorite,
+                                        onClick = toggleFavorite
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(16.dp))
@@ -1040,22 +1072,6 @@ fun MovieDetailScreen(
                                     .entranceMotion(entranceClock, order = 7),
                                 horizontalArrangement = Arrangement.SpaceAround
                             ) {
-                                DetailAction(
-                                    icon = if (isFavorite) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
-                                    label = if (isFavorite) "已追剧" else "追剧",
-                                    active = isFavorite,
-                                    onClick = {
-                                        WatchStore.toggleFavorite(
-                                            FavoriteItem(
-                                                videoId = movieId,
-                                                title = finalData.title,
-                                                posterUrl = effectivePosterUrl
-                                            )
-                                        )
-                                        // 这里读的是点击前的状态：true 表示本次操作是取消。
-                                        onShowToast(if (isFavorite) "已取消追剧" else "已加入追剧清单")
-                                    }
-                                )
                                 DetailAction(Icons.Default.Download, "离线缓存") { onShowToast("已加入后台高速下载任务") }
                                 DetailAction(Icons.Default.Cast, "DLNA投屏") { onShowToast("正在搜索局域网电视设备...") }
                                 DetailAction(Icons.Default.Share, "分享") { onShowToast("分享链接已复制至剪贴板") }
@@ -1151,13 +1167,66 @@ private fun HeroMetaRow(
 
 /** 统一分区标题：近黑、16sp、左对齐 */
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-        color = LocalBTextColors.current.primary
-    )
+private fun SectionTitle(text: String, trailing: (@Composable () -> Unit)? = null) {
+    val title: @Composable () -> Unit = {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = LocalBTextColors.current.primary
+        )
+    }
+    if (trailing == null) {
+        title()
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            title()
+            Spacer(modifier = Modifier.weight(1f))
+            trailing()
+        }
+    }
+}
+
+/**
+ * 追剧开关（与「我的」页追剧清单共用 watch_prefs 里的同一张收藏表）。
+ *
+ * @param contained true：与「立即播放」并排的 48dp 圆形按钮，固定浅灰底与播放按钮同色，
+ *   不跟随主题（B 层动态字色只作用于文字，容器色一旦跟主题走，深色模式下会浅底浅字）。
+ *   false：播放态「选集」标题右侧的裸图标，交给 IconButton 的涟漪，字色跟 B 层。
+ */
+@Composable
+private fun FavoriteToggle(contained: Boolean, isFavorite: Boolean, onClick: () -> Unit) {
+    val icon = if (isFavorite) Icons.Default.Bookmark else Icons.Default.BookmarkBorder
+    val label = if (isFavorite) "已追剧" else "追剧"
+    if (contained) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(Color(0xFFE4E7EE))
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isFavorite) MaterialTheme.colorScheme.primary else BTextPrimary,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    } else {
+        IconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = LocalBTextColors.current.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
 }
 
 /** M3 原生操作项：黑色图标与文字 */

@@ -266,30 +266,15 @@ object WatchStore {
         editHistory { list -> list.clear() }
     }
 
-    /** 我的收藏 / 待看片单：同一个 videoId 从收藏表移除。 */
+    /** 追剧清单：同一个 videoId 从收藏表移除。 */
     fun removeFavorite(videoId: String) {
         if (videoId.isBlank()) return
         editFavorites { list -> list.removeAll { item -> item.videoId == videoId } }
     }
 
-    /** 我的收藏：全清。 */
+    /** 追剧清单：全清。 */
     fun clearFavorites() {
         editFavorites { list -> list.clear() }
-    }
-
-    /** 待看片单：只移除「收藏了但没播过」的那些，已开播的收藏保留。 */
-    fun clearPending() {
-        val ds = store ?: return
-        scope.launch {
-            ds.edit { prefs ->
-                val watchedIds = decodeHistory(prefs[KEY_HISTORY])
-                    .filterNot { it.isLive }
-                    .map { it.videoId }
-                    .toSet()
-                val kept = decodeFavorites(prefs[KEY_FAVORITES]).filter { it.videoId in watchedIds }
-                prefs[KEY_FAVORITES] = gson.toJson(kept.take(FAVORITE_LIMIT))
-            }
-        }
     }
 
     /** 在看剧集：删掉这一部片的所有点播历史（收藏不动）。 */
