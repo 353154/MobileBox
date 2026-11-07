@@ -5,7 +5,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -34,6 +36,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -43,6 +46,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
@@ -50,15 +54,22 @@ import coil.compose.AsyncImage
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.toLoadableImageUrl
 import com.damon.mobilebox.ui.components.rememberRetryableImageRequest
+import com.damon.mobilebox.ui.components.rememberPosterTone
 import com.damon.mobilebox.ui.player.PlayerDetailScreen
 import com.damon.mobilebox.ui.player.VideoDetailData
 import com.damon.mobilebox.ui.player.VideoEpisode
 import com.damon.mobilebox.ui.player.VideoRoute
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 private val HeroScrim = Color(0xFF080B12)
 // B 层统一字色：整屏会随滚动变白，深色文字才可读；不跟随 MaterialTheme 的灰阶/主题蓝
 private val BTextPrimary = Color(0xFF111418)
 private val BTextSecondary = Color(0xFF5A616B)
+// 深色主题下整屏遮罩是把海报压暗（surface 近黑），字色终点必须反过来变成浅色，
+// 否则滚上去就是「黑底黑字」。
+private val BTextPrimaryDark = Color(0xFFEDF1F7)
+private val BTextSecondaryDark = Color(0xFFA9B2C0)
 /** B 层动态字色：首屏压在深色海报上为白，随整屏变白平滑过渡到近黑 */
 data class BTextColors(val primary: Color, val secondary: Color)
 val LocalBTextColors = staticCompositionLocalOf { BTextColors(BTextPrimary, BTextSecondary) }
@@ -74,7 +85,8 @@ val LocalBTextColors = staticCompositionLocalOf { BTextColors(BTextPrimary, BTex
  *    独立的全屏 verticalScroll 覆盖层，声明在 A 之后因此绘制在 A 之上；首块是 height(heroHeight)
  *    的透明 Box，文字底部对齐（scroll=0 时视觉上仍落在海报下缘）。B 层首块完全透明：
  *    文字不配任何暗底，绝不使用铺满首块或文字块的黑阶，否则矩形边界会切出水平硬线。
- *    Alpha 恒为 1f，内部元素全部不透明，只发生 Y 轴位移，不变淡、不做逐元素渐显。
+ *    进入时做一次性交错入场（淡入 + 自下而上位移，见 entranceMotion）；入场结束后
+ *    Alpha 恒为 1f，之后只有滚动引起的 Y 轴位移，不随滚动变淡、也不做逐元素渐显。
  *
  * 组件：全部 Material 3 原生（TopAppBar / Button / IconButton / FilterChip / AssistChip /
  * TabRow / Surface），无自定义玻璃控件。整屏白遮罩 alpha 随滚动 0->1 均匀增长
@@ -127,15 +139,84 @@ fun MovieDetailScreen(
 
     val scrollState = rememberScrollState()
 
-    // 状态栏图标随整屏白遮罩反转：深色海报上用浅色图标，背景转白后切成深色图标。
-    // derivedStateOf 返回布尔，只有跨过阈值才重组一次，滚动不会每帧重组。
+    // 整屏白遮罩进度：同一份进度同时驱动白遮罩、B 层字色与状态栏图标，
+    // 保证三者永远同拍，不会出现「背景已经白了、字还是白的」这类错位。
+    val veilProgress by remember(heroHeightPx) {
+        derivedStateOf {
+            (scrollState.value / (heroHeightPx * 0.65f).coerceAtLeast(1f)).coerceIn(0f, 1f)
+        }
+    }
+
+    // ---- 海报明暗采样：首屏文字直接压在海报上，浅色海报必须换深色字 ----
+    // 海报以 ContentScale.Crop 铺满整屏且只裁左右，所以图片纵向比例 == 屏幕纵向比例，
+    // 片名所在的屏幕位置可以直接当作图片位置来采样。
+    // 条带下沿取 hero 块高度（片名贴其底部对齐），向上覆盖片名 + 元信息两行。
+    val heroFraction = remember(heroHeightPx) {
+        val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+        (heroHeightPx / screenHeightPx.coerceAtLeast(1f)).coerceIn(0.1f, 1f)
+    }
+    val posterTone = rememberPosterTone(loadablePosterUrl, bandBottomFraction = heroFraction)
+
+    // 遮罩色就是 colorScheme.surface：浅色主题下「变白」、深色主题下「压暗」。
+    // 字色终点必须跟着遮罩走，否则深色模式下会滚成黑底黑字。
+    val screenSurface = MaterialTheme.colorScheme.surface
+    val lightVeil = screenSurface.luminance() > 0.5f
+    val veilPrimary = if (lightVeil) BTextPrimary else BTextPrimaryDark
+    val veilSecondary = if (lightVeil) BTextSecondary else BTextSecondaryDark
+
+    // 条带偏亮时起手就用深色字；否则维持白字，随白遮罩一起过渡到近黑
+    val heroTextStart = if (posterTone.prefersDarkText) BTextPrimary else Color.White
+    val heroSubTextStart =
+        if (posterTone.prefersDarkText) BTextSecondary else Color.White.copy(alpha = 0.92f)
+
+    // ---- 交错式入场编排（Staggered Entrance）----
+    // 海报由 sharedBounds 在 280ms 内从列表位置飞入放大；B 层文字不能等海报定格才出现，
+    // 也不能与海报同速起步（会显得整页一起"贴"上来）。这里让文字在海报位移完成约 70%
+    // （200ms）时接力：淡入 + 自下而上 34dp 位移 + easeOutCubic 收尾，按视觉顺序逐组铺开。
+    // 进度只在 graphicsLayer 的绘制阶段读取（传 lambda 而不是值），滚动/动画都不会触发重组。
+    val entrance = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        // 用户一上手滑动就立刻收尾，避免出现"边滚边飘"的错位。
+        // 判据必须是位移量而不是 isScrollInProgress：页面刚组合时后者会瞬间为 true，
+        // 会把整段入场动画一次性 snap 到终值（实测表现为文字 1 帧全亮，等于没做）。
+        launch {
+            snapshotFlow { scrollState.value }.first { it > 0 }
+            entrance.snapTo(EntranceTotalMs)
+        }
+        // 以毫秒为单位的编排时钟：线性推进，缓动在各组切片内单独做，避免双重缓动糊掉层次
+        entrance.animateTo(
+            targetValue = EntranceTotalMs,
+            animationSpec = tween(
+                durationMillis = EntranceTotalMs.toInt(),
+                delayMillis = EntranceStartDelayMs.toInt(),
+                easing = LinearEasing
+            )
+        )
+    }
+    // 页面外壳（返回按钮）比内容更早到位，避免开头几百毫秒"没有退出入口"的错觉
+    val chromeAlpha = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        chromeAlpha.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 220, delayMillis = 80, easing = FastOutSlowInEasing)
+        )
+    }
+
+    // 状态栏图标：深色海报上用浅色图标，背景转白后切成深色图标。
+    // 海报顶部本身就偏亮时，起手就直接用深色图标，否则白图标在浅色海报上看不见。
+    // 采样结果是外部值，必须作为 remember 的 key，否则 derivedStateOf 的 lambda
+    // 会一直捕获首次组合时的旧值（analyzed=false），浅色海报永远不触发。
     val view = LocalView.current
     val insetsController = (view.context as? Activity)?.window
         ?.let { WindowCompat.getInsetsController(it, view) }
-    val useDarkStatusIcons by remember {
+    val useDarkStatusIcons by remember(posterTone, lightVeil) {
         derivedStateOf {
-            (scrollState.value / (heroHeightPx * 0.65f).coerceAtLeast(1f))
-                .coerceIn(0f, 1f) > 0.5f
+            if (lightVeil) {
+                posterTone.prefersDarkSystemBar || veilProgress > 0.5f
+            } else {
+                // 深色主题：遮罩越滚越暗，滚上去后必须换回浅色图标
+                posterTone.prefersDarkSystemBar && veilProgress < 0.5f
+            }
         }
     }
     DisposableEffect(Unit) {
@@ -194,10 +275,10 @@ fun MovieDetailScreen(
                     }
 
 
-                // 2. 整屏变白层：参考视频 3.0s(深色) -> 4.2s(浅白) 是整屏均匀交叉淡入，
+                // 2. 整屏遮罩：参考视频 3.0s(深色) -> 4.2s(浅白) 是整屏均匀交叉淡入，
                 //    不是白色面板从下往上盖，也不是空间上的透明→白渐变。
-                //    全屏纯白矩形 alpha 随滚动 0->1 均匀增长：无面板边界、无渐变起始段、无灰带。
-                val screenSurface = MaterialTheme.colorScheme.surface
+                //    全屏纯 surface 色矩形 alpha 随滚动 0->1 均匀增长：无面板边界、无渐变起始段、无灰带。
+                //    深色主题下 surface 近黑，视觉上就是「整屏压暗」。
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -214,15 +295,10 @@ fun MovieDetailScreen(
                         .fillMaxSize()
                         .verticalScroll(scrollState)
                 ) {
-                    // 字色随整屏白遮罩进度由白渐变到黑：首屏压在深色海报上可读，
-                    // 滚到浅色内容区也不会出现「白底白字」。
-                    val veilProgress by remember {
-                        derivedStateOf {
-                            (scrollState.value / (heroHeightPx * 0.65f).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                        }
-                    }
-                    val heroTextColor = lerp(Color.White, BTextPrimary, veilProgress)
-                    val heroSubTextColor = lerp(Color.White.copy(alpha = 0.9f), BTextSecondary, veilProgress)
+                    // 字色：起点由海报亮度决定（浅色海报直接起手深色字），
+                    // 终点跟随主题——浅色主题过渡到近黑，深色主题过渡到浅色，滚上去都保持可读。
+                    val heroTextColor = lerp(heroTextStart, veilPrimary, veilProgress)
+                    val heroSubTextColor = lerp(heroSubTextStart, veilSecondary, veilProgress)
                     val bColors = BTextColors(heroTextColor, heroSubTextColor)
                     CompositionLocalProvider(LocalBTextColors provides bColors) {
 
@@ -236,6 +312,7 @@ fun MovieDetailScreen(
                             modifier = Modifier
                                 .align(Alignment.BottomStart)
                                 .fillMaxWidth()
+                                .entranceMotion({ entrance.value }, order = 0, rise = 30.dp)
                                 .padding(horizontal = 20.dp, vertical = 32.dp)
                         ) {
                             Text(
@@ -273,107 +350,144 @@ fun MovieDetailScreen(
                                 textAlign = TextAlign.Center,
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(modifier = Modifier.height(28.dp))
-
-                            // 2. 播放资源：M3 原生按钮 + 选集 / 线路
-                            SectionTitle("播放资源")
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = {
-                                    val firstEp = currentRoute.episodes.firstOrNull()
-                                    if (firstEp != null) {
-                                        currentPlayingEpisode = firstEp
-                                        onPlayEpisode(firstEp)
-                                    }
-                                },
-                                shape = RoundedCornerShape(26.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFFE4E7EE),
-                                    contentColor = LocalBTextColors.current.primary
-                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(48.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = LocalBTextColors.current.primary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "立即播放 · ${
-                                        currentRoute.episodes.firstOrNull()?.let { formatEpisodeName(it.name) } ?: "第 1 集"
-                                    }",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = LocalBTextColors.current.primary
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(16.dp))
-                            EpisodeChips(
-                                episodes = currentRoute.episodes,
-                                selectedId = selectedEpisodeId,
-                                onClick = { ep ->
-                                    selectedEpisodeId = ep.episodeId
-                                    currentPlayingEpisode = ep
-                                    onPlayEpisode(ep)
-                                }
+                                    .entranceMotion({ entrance.value }, order = 1)
                             )
-                            if (finalData.routes.size > 1) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    finalData.routes.forEachIndexed { index, route ->
-                                        FilterChip(
-                                            selected = selectedRouteIndex == index,
-                                            onClick = { selectedRouteIndex = index },
-                                            label = {
-                                                Text("${route.routeName} ${route.tag}", color = LocalBTextColors.current.primary)
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                labelColor = LocalBTextColors.current.primary,
-                                                selectedLabelColor = LocalBTextColors.current.primary
+                            Spacer(modifier = Modifier.height(28.dp))
+
+                            // 2. 播放资源：M3 原生按钮 + 选集 / 线路（入场第 3 组）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 2)
+                            ) {
+                                SectionTitle("播放资源")
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        val firstEp = currentRoute.episodes.firstOrNull()
+                                        if (firstEp != null) {
+                                            currentPlayingEpisode = firstEp
+                                            onPlayEpisode(firstEp)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(26.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        // 容器是固定的浅灰，与主题无关；文字必须固定用近黑，
+                                        // 不能跟着 B 层动态字色走（深色主题下会变成白字压浅灰）。
+                                        containerColor = Color(0xFFE4E7EE),
+                                        contentColor = BTextPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = BTextPrimary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "立即播放 · ${
+                                            currentRoute.episodes.firstOrNull()?.let { formatEpisodeName(it.name) }
+                                                ?: "第 1 集"
+                                        }",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = BTextPrimary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                                EpisodeChips(
+                                    episodes = currentRoute.episodes,
+                                    selectedId = selectedEpisodeId,
+                                    onClick = { ep ->
+                                        selectedEpisodeId = ep.episodeId
+                                        currentPlayingEpisode = ep
+                                        onPlayEpisode(ep)
+                                    }
+                                )
+                                if (finalData.routes.size > 1) {
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        finalData.routes.forEachIndexed { index, route ->
+                                            FilterChip(
+                                                selected = selectedRouteIndex == index,
+                                                onClick = { selectedRouteIndex = index },
+                                                label = {
+                                                    Text("${route.routeName} ${route.tag}", color = LocalBTextColors.current.primary)
+                                                },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    labelColor = LocalBTextColors.current.primary,
+                                                    selectedLabelColor = LocalBTextColors.current.primary
+                                                )
                                             )
-                                        )
+                                        }
                                     }
                                 }
                             }
 
                             Spacer(modifier = Modifier.height(28.dp))
 
-                            // 3. 演职人员（真实数据优先，不足用测试数据补齐）
-                            SectionTitle("演职人员")
-                            Spacer(modifier = Modifier.height(12.dp))
-                            CastRow(data = finalData)
+                            // 3. 演职人员（真实数据优先，不足用测试数据补齐，入场第 4 组）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 3)
+                            ) {
+                                SectionTitle("演职人员")
+                                Spacer(modifier = Modifier.height(12.dp))
+                                CastRow(data = finalData)
+                            }
 
                             Spacer(modifier = Modifier.height(28.dp))
 
-                            // 4. 分类（测试数据标签，M3 AssistChip 白底黑字）
-                            SectionTitle("分类")
-                            Spacer(modifier = Modifier.height(12.dp))
-                            TagChips(tags = finalData.tags)
+                            // 4. 分类（测试数据标签，M3 AssistChip 白底黑字，入场第 5 组）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 4)
+                            ) {
+                                SectionTitle("分类")
+                                Spacer(modifier = Modifier.height(12.dp))
+                                TagChips(tags = finalData.tags)
+                            }
 
                             Spacer(modifier = Modifier.height(28.dp))
 
-                            // 5. 预告片（测试数据占位卡）
-                            SectionTitle("预告片")
-                            Spacer(modifier = Modifier.height(12.dp))
-                            TrailerRow()
+                            // 5. 预告片（测试数据占位卡，入场第 6 组）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 5)
+                            ) {
+                                SectionTitle("预告片")
+                                Spacer(modifier = Modifier.height(12.dp))
+                                TrailerRow()
+                            }
 
                             Spacer(modifier = Modifier.height(28.dp))
 
-                            // 6. 剧照（测试数据占位网格）
-                            SectionTitle("剧照")
-                            Spacer(modifier = Modifier.height(12.dp))
-                            StillsPlaceholder()
+                            // 6. 剧照（测试数据占位网格，入场第 7 组）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 6)
+                            ) {
+                                SectionTitle("剧照")
+                                Spacer(modifier = Modifier.height(12.dp))
+                                StillsPlaceholder()
+                            }
 
                             Spacer(modifier = Modifier.height(28.dp))
 
-                            // 7. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层
+                            // 7. 操作项：M3 原生 IconButton，黑色图标与文字，无悬浮层（入场第 8 组）
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .entranceMotion({ entrance.value }, order = 7),
                                 horizontalArrangement = Arrangement.SpaceAround
                             ) {
                                 DetailAction(
@@ -421,7 +535,14 @@ fun MovieDetailScreen(
                         titleContentColor = MaterialTheme.colorScheme.onSurface,
                         navigationIconContentColor = Color.White
                     ),
-                    modifier = Modifier.align(Alignment.TopCenter)
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .graphicsLayer {
+                            // 外壳先于内容到位：淡入 + 自上而下 10dp 落下，绘制阶段读取，不重组
+                            val a = chromeAlpha.value
+                            alpha = a
+                            translationY = (1f - a) * -10.dp.toPx()
+                        }
                 )
 
                 // 5. 播放器层
@@ -618,7 +739,8 @@ private fun CastRow(data: VideoDetailData) {
                             text = name.take(1),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
-                            color = LocalBTextColors.current.primary
+                            // 头像底是固定的浅莫兰迪色，字必须固定近黑，不能跟 B 层动态字色走
+                            color = BTextPrimary
                         )
                     }
                 }
@@ -691,3 +813,37 @@ private fun formatEpisodeName(rawName: String): String {
         trimmed
     }
 }
+
+// ---------- 交错式入场（Staggered Entrance） ----------
+// 组数即 B 层视觉顺序：片名区、简介、播放资源、演职人员、分类、预告片、剧照、操作行。
+private const val EntranceGroupCount = 8
+/** 共享元素海报转场 280ms，在它跑到约 72% 时文字接力，形成视觉接续而不是各做各的 */
+private const val EntranceStartDelayMs = 200f
+/** 单组淡入 + 上浮的时长 */
+private const val EntranceRiseDurationMs = 320f
+/** 相邻两组的启动间隔：首屏可见的四组之间层次最明显 */
+private const val EntranceStaggerMs = 40f
+/** 整段编排总时长（不含起始延迟）= 320 + 40*7 = 600ms */
+private val EntranceTotalMs = EntranceRiseDurationMs + EntranceStaggerMs * (EntranceGroupCount - 1)
+
+/**
+ * 某组在编排时钟 [elapsedMs]（毫秒，从入场开始计）下的进度 0→1。
+ * 组内用 easeOutCubic 收尾：起步跟手、末段减速落定，比线性更有物理惯性。
+ */
+private fun groupProgress(elapsedMs: Float, order: Int): Float {
+    val start = order * EntranceStaggerMs
+    val linear = ((elapsedMs - start) / EntranceRiseDurationMs).coerceIn(0f, 1f)
+    val inv = 1f - linear
+    return 1f - inv * inv * inv
+}
+
+/**
+ * 入场动势：透明度 0→1，同时自下而上位移 [rise]，与海报的放大飞入形成空间接续。
+ * 时钟用 lambda 而非值传入，在 graphicsLayer 的绘制阶段读取 —— 动画每帧只重绘，不触发重组。
+ */
+private fun Modifier.entranceMotion(elapsed: () -> Float, order: Int, rise: Dp = 34.dp): Modifier =
+    this.graphicsLayer {
+        val p = groupProgress(elapsed(), order)
+        alpha = p
+        translationY = (1f - p) * rise.toPx()
+    }
