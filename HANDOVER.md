@@ -316,6 +316,17 @@
 - **图标统一**：原来左侧 7 个图标代码里都写 `24.dp`，真正不统一的是「关于 MobileBox」走 `SettingRowItem`（22dp 且灰色），右侧箭头还有 `20/18dp` 混用。新增 `SettingLeadingIcon`（固定 24dp 容器 + 22dp 绘制 + 统一主题色），8 行全部走同一个组件；箭头统一 18dp，主题色圆球 20 → 18dp。
 - 顺带删掉删除后变成未使用的 `onShowToast` 参数，编译警告归零（只剩图标 `AutoMirrored` 弃用警告）。
 
+### 8.16 TMDB 元数据增强（Step 4.2 前半，2026-11-07 21:30 提交 `b93037a`，用户自测）
+- **凭据内建，无开关**：用户定案「直接编进 app，删掉选项，反正就我自己用」。`TmdbConfig.ACCESS_TOKEN` 是 v4 JWT（`api_read` 只读），设置页「元数据」分组、`TmdbSettingsDialog`、`TmdbSettings` DataStore 全部删除。**公开分发前必须先清空这个字面量**，否则等于把额度送人。
+- **两条路线，直连优先**：国内 `api.themoviedb.org` 只被 **DNS 投毒**，链路本身通 —— `TmdbDns` 用内置 A 记录（`3.169.231.17/97/116/119`）绕开污染，实测无代理 0.7 秒返回。`workers.dev` 是 **SNI 阻断**，只有挂代理才通，所以 Cloudflare Worker（`tools/tmdb-proxy/`）只作后备，不是主路。`image.tmdb.org` 可直连，`img.youtube.com` / `www.youtube.com` 不可达。
+- **匹配**：`ACCEPT_SCORE = 45`，**标题必须完全相同或包含**（删掉了「4 字公共前缀 +12」分支，防《名侦探柯南》这类误配）；年份只参与打分**不过滤**（`first_air_date_year` 是精确匹配，会把结果打成 0）；三轮 `tv → movie → /search/multi`。
+- **一次拿全**：`append_to_response=images,credits` + `include_image_language=zh,en,null`。**预告片已整体删除**（TMDB 只给 YouTube key，国内打不开，留一排死卡片不如不留）。
+- **采纳规则**：评分需 `voteCount >= 10` 才覆盖源站（1 票 10.0 会把 8.1 盖掉）；海报仍用源站（TMDB 中文海报覆盖率低）；类型 TMDB 优先 + 语义去重（「科幻」vs「科幻片」）+ `take(6)`。
+- **缓存**：`tmdb_cache.json`，500 条 / 30 天 / miss 7 天，`STRATEGY_VERSION` 变化时启动即清空（**改匹配逻辑或数据结构必须升版本**）。
+- **详情页**：演职人员走 `credits`（导演 / 剧集 `created_by` 主创排前，演员按 `order`，共 12 条，带 `w185` 头像与角色名）；剧照全量横滑（不再 `take(6)`），点击进全屏 `HorizontalPager`（左右滑、点屏 / 返回键 / 右上 × 关闭、顶部 `i / n`，**底色必须 0xFF 纯黑**，半透明会把下层内容透上来）；简介固定 3 行，用 `hasVisualOverflow` 判断真实截断，截断时整段可点并弹 `StandardDialog` 看全文。
+- **假数据全部删除**：`TestCast`（假人名）、`TestDescription`（编造的病毒剧情）、`TestTags`（凑数的三个分类）。刮不到就整块隐藏 —— 少一个区块比给用户看编的内容好。分类 / 简介为空时连 `SectionTitle` 一起隐藏，入场 `order` 槽位保留不重排。
+- **未做 / 已知限制**：预告片播放（YouTube 不可达，除非自建转发且违反 Cloudflare 条款）；`tools/tmdb-proxy/worker.js` 里的 `/yt/thumb` 路由已成死代码；token 明文在 APK 内，仅限自用。
+
 
 ---
 
@@ -487,3 +498,4 @@ cd /Users/damon/Documents/MobileBox && ./gradlew assembleDebug
 - Step 3.1 双核解码：**用户已明确跳过**，不再排期。
 - Step 3.3 后半弹幕（先定数据源）→ Step 3.4 画质增强（Anime4K/FSR，渲染链路大改，风险最高）。
 - Step 4.1 Spider 调度 / 4.2 去广告 + TMDB 刮削 / 4.3 离线下载：均卡在外部前置（爬虫执行环境、TMDB key 与广告样本、WorkManager），排在 3.x 之后。
+- **Step 4.2 拆开看**：TMDB 刮削部分已完成（见 8.16，提交 `b93037a`，等用户自测）；同一 Step 里的**去广告切片尚未开始**，仍缺广告样本。
