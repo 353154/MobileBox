@@ -10,6 +10,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -37,6 +40,11 @@ import java.net.URLEncoder
 fun AppNavigation(themeManager: ThemeManager) {
     val navController = rememberNavController()
 
+    // 主界面当前 Tab 存放在 NavHost **之外**：进详情 / 观影列表时 home 这个 destination
+    // 会被移出组合，只靠 Pager 自身的 rememberSaveable 恢复会丢，返回后落回第 0 页。
+    // 放在这里（AppNavigation 不随导航销毁）就能稳定回到原 Tab。
+    var mainPage by rememberSaveable { mutableIntStateOf(0) }
+
     // 上报当前可见路由给画中画控制器：转场期间播放器实例还在，但用户眼前可能已经是别的页面
     val currentEntry by navController.currentBackStackEntryAsState()
     LaunchedEffect(currentEntry) {
@@ -58,6 +66,8 @@ fun AppNavigation(themeManager: ThemeManager) {
             composable("home") {
                 AnimatedMainScreen(
                     themeManager = themeManager,
+                    initialPage = mainPage,
+                    onPageChanged = { mainPage = it },
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
                     onNavigateToDetail = { movie ->
