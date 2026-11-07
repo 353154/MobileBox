@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,6 +45,8 @@ import kotlinx.coroutines.launch
 fun CategoryScreen(
     onMovieClick: (VideoDetailData) -> Unit = {},
     onShowToast: (String) -> Unit = {},
+    /** 搜索入口。首页改成纯 TMDB 后不再有顶栏，搜索挪到这里（分类页是找片最自然的入口）。 */
+    onSearchClick: () -> Unit = {},
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null
 ) {
@@ -103,6 +106,31 @@ fun CategoryScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         // ==========================================
+        // 标题行：分类 + 搜索入口
+        // ==========================================
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 8.dp, top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "分类",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onSearchClick) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "搜索",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        // ==========================================
         // 第一排：真实一级分类标签横向流
         // ==========================================
         if (primaryCategories.size > 1) {
@@ -111,7 +139,7 @@ fun CategoryScreen(
                 state = primaryChipState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp, bottom = 6.dp)
+                    .padding(top = 6.dp, bottom = 6.dp)
                     .horizontalScrollFadingEdge(primaryChipState, 28.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -247,7 +275,7 @@ fun CategoryScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = if (selectedSite == null) "请前往首页添加 TVBox 订阅链接" else "可尝试切换至其他分类或下拉刷新",
+                            text = if (selectedSite == null) "请前往设置页添加 TVBox 订阅链接" else "可尝试切换至其他分类或下拉刷新",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 13.sp
                         )

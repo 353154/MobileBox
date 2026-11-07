@@ -18,6 +18,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -25,10 +26,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.BorderStroke
@@ -54,7 +54,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import com.damon.mobilebox.ui.player.findActivity
@@ -69,7 +77,7 @@ import com.damon.mobilebox.ui.theme.ThemeManager
 import com.damon.mobilebox.ui.theme.ThemePreference
 import com.damon.mobilebox.ui.theme.ThemeColorMode
 import com.damon.mobilebox.ui.theme.AppThemeState
-import com.damon.mobilebox.ui.components.StandardPosterCard
+import com.damon.mobilebox.ui.components.HomeBaseColor
 import com.damon.mobilebox.ui.components.NavGlyph
 import com.damon.mobilebox.ui.components.NavGlyphIcon
 import com.damon.mobilebox.ui.components.ModernToastMessage
@@ -104,6 +112,7 @@ import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.damon.mobilebox.data.tmdb.TmdbMeta
 
 /** 直播的一次观看会话：首帧落地才开，换台 / 关闭播放时结算墙上时长。 */
 private class LiveWatchSession {
@@ -120,12 +129,23 @@ fun AnimatedMainScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     onNavigateToDetail: (VideoDetailData) -> Unit = {},
+    onNavigateToTmdbDetail: (TmdbMeta) -> Unit = {},
     onNavigateToSearch: () -> Unit = {},
     onNavigateToWatchList: (WatchListType) -> Unit = {}
 ) {
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // 首页滚动状态提升到这里（而不是留在 TmdbHomeContent 内部）：
+    // 底部导航栏要靠它判断「现在是不是压在海报上」。顺带的好处是切 Tab 再回来，
+    // 首页的滚动位置还在。
+    val homeScrollState = rememberScrollState()
+    val homeHeroHeightPx = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenHeightDp.dp * HERO_SCREEN_FRACTION)
+            .coerceIn(420.dp, 700.dp)
+            .toPx()
+    }
 
     // 从详情页 / 观影列表返回时，home 会被 NavHost 重新组合，`rememberPagerState` 自带的
     // saveable 恢复并不总能命中，实测会落回第 0 页（首页）。这里以上层保存的 Tab 为准
@@ -142,6 +162,8 @@ fun AnimatedMainScreen(
     val selectedSite by TvBoxRepository.selectedSite.collectAsState()
     var showSourceDialog by remember { mutableStateOf(false) }
 
+    // 首页（第 1 页）现在是纯 TMDB 内容：轮播 / 榜单的加载与下拉刷新全部由
+    // TmdbHomeContent 自己持有，这里不保存任何首页状态，也不再渲染顶部栏。
     // 当前正在浏览的沉浸式高斯模糊详情页
     var selectedMovieDetail by remember { mutableStateOf<VideoDetailData?>(null) }
     // 当前正在播放的影片与具体分集 (非空时拉起 PlayerDetailScreen)
@@ -220,64 +242,71 @@ fun AnimatedMainScreen(
                                             // 本 Pager 已关闭用户滑动，底部导航语义下应为瞬时切换。
                                             pagerState.scrollToPage(index)
                                         }
-                                    }
+                                    },
+                                    // 首页的滚动状态由这里持有：底部导航栏要读它决定
+                                    // 「透明压在海报上」还是「白底」。
+                                    homeScrollState = homeScrollState,
+                                    heroHeightPx = homeHeroHeightPx
                                 )
                             }
                         }
                     ) { paddingValues ->
+                        val bottomBarInset =
+                            if (!isMainLandscape) paddingValues.calculateBottomPadding() else 0.dp
                         HorizontalPager(
                             state = pagerState,
                             userScrollEnabled = false,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(bottom = if (!isMainLandscape) paddingValues.calculateBottomPadding() else 0.dp)
+                            // 不再统一 padding(bottom)：首页必须铺到导航栏底下才有沉浸感
+                            // （导航栏透明时透出的就是海报下方的模糊延续）。
+                            // 其它页在下面的 else 分支里自己让出这段高度，观感与之前一致。
+                            modifier = Modifier.fillMaxSize()
                         ) { page ->
-                            when (page) {
-                                0 -> {
-                                    Column(modifier = Modifier.fillMaxSize()) {
-                                        OptimizedTopBar(
-                                            sourceName = selectedSite?.name ?: "点击配置订阅",
-                                            onSearchClick = onNavigateToSearch,
-                                            onSourceClick = { showSourceDialog = true }
-                                        )
-                                        HomeGridContent(
-                                            onMovieClick = { detail ->
-                                                TvBoxRepository.selectedDetail = detail
-                                                onNavigateToDetail(detail)
-                                            },
-                                            onConfigureSubscription = { showSourceDialog = true },
-                                            onShowToast = { toastMessage = it },
-                                            sharedTransitionScope = sharedTransitionScope,
-                                            animatedVisibilityScope = animatedVisibilityScope
-                                        )
+                            if (page == 0) {
+                                // 首页纯 TMDB：沉浸式大图 + 正在热映 / 正在播出 / 高分佳作横滑。
+                                // 不再有顶部栏（数据源名、搜索按钮），也不再混入采集源海报网格。
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    TmdbHomeContent(
+                                        onEntryClick = { meta -> onNavigateToTmdbDetail(meta) },
+                                        scrollState = homeScrollState,
+                                        bottomInset = bottomBarInset
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .padding(bottom = bottomBarInset)
+                                ) {
+                                    when (page) {
+                                        1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                            CategoryScreen(
+                                                onMovieClick = { detail ->
+                                                    TvBoxRepository.selectedDetail = detail
+                                                    onNavigateToDetail(detail)
+                                                },
+                                                onShowToast = { toastMessage = it },
+                                                onSearchClick = onNavigateToSearch,
+                                                sharedTransitionScope = sharedTransitionScope,
+                                                animatedVisibilityScope = animatedVisibilityScope
+                                            )
+                                        }
+                                        2 -> Box(Modifier.fillMaxSize().let { if (!isMainLandscape) it.statusBarsPadding() else it }) {
+                                            LiveScreenContent(
+                                                onConfigureSubscription = { showSourceDialog = true },
+                                                onShowToast = { toastMessage = it }
+                                            )
+                                        }
+                                        3 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                            ModernSettingsScreen(
+                                                themeManager = themeManager,
+                                                selectedSite = selectedSite,
+                                                onOpenSourceDialog = { showSourceDialog = true }
+                                            )
+                                        }
+                                        4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                            ProfileScreen(onOpenList = onNavigateToWatchList)
+                                        }
                                     }
-                                }
-                                1 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                                    CategoryScreen(
-                                        onMovieClick = { detail ->
-                                            TvBoxRepository.selectedDetail = detail
-                                            onNavigateToDetail(detail)
-                                        },
-                                        onShowToast = { toastMessage = it },
-                                        sharedTransitionScope = sharedTransitionScope,
-                                        animatedVisibilityScope = animatedVisibilityScope
-                                    )
-                                }
-                                2 -> Box(Modifier.fillMaxSize().let { if (!isMainLandscape) it.statusBarsPadding() else it }) {
-                                    LiveScreenContent(
-                                        onConfigureSubscription = { showSourceDialog = true },
-                                        onShowToast = { toastMessage = it }
-                                    )
-                                }
-                                3 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                                    ModernSettingsScreen(
-                                        themeManager = themeManager,
-                                        selectedSite = selectedSite,
-                                        onOpenSourceDialog = { showSourceDialog = true }
-                                    )
-                                }
-                                4 -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                                    ProfileScreen(onOpenList = onNavigateToWatchList)
                                 }
                             }
                         }
@@ -307,207 +336,6 @@ fun AnimatedMainScreen(
             onDismiss = { showSourceDialog = false },
             onShowToast = { toastMessage = it }
         )
-    }
-}
-
-// -------------------------------------------------------------------------------------
-// 1. 顶部操作栏 (首页极简大标题与搜索按钮)
-// -------------------------------------------------------------------------------------
-@Composable
-fun OptimizedTopBar(
-    sourceName: String = "点击配置订阅",
-    onSearchClick: () -> Unit = {},
-    onSourceClick: () -> Unit = {}
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { onSourceClick() }
-                .padding(vertical = 4.dp, horizontal = 4.dp)
-        ) {
-            Text(
-                text = sourceName,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Icon(
-                imageVector = Icons.Default.ArrowDropDown,
-                contentDescription = "切换站源",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-
-        IconButton(
-            onClick = { onSearchClick() },
-            modifier = Modifier.size(40.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Search,
-                contentDescription = "搜索",
-                tint = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-// -------------------------------------------------------------------------------------
-// 2. 首页精选点播 (全面接入 TVBox 真实采集源数据流，彻底移除所有 Mock 假数据)
-// -------------------------------------------------------------------------------------
-@OptIn(ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
-@Composable
-fun HomeGridContent(
-    onMovieClick: (VideoDetailData) -> Unit = {},
-    onConfigureSubscription: () -> Unit = {},
-    onShowToast: (String) -> Unit = {},
-    sharedTransitionScope: SharedTransitionScope? = null,
-    animatedVisibilityScope: AnimatedVisibilityScope? = null
-) {
-    val coroutineScope = rememberCoroutineScope()
-    val realVodList by TvBoxRepository.realVodList.collectAsState()
-    val selectedSite by TvBoxRepository.selectedSite.collectAsState()
-    val isRepoLoading by TvBoxRepository.isLoading.collectAsState()
-    var isRefreshing by remember { mutableStateOf(false) }
-
-    StandardPullToRefreshBox(
-        // 仓库首屏加载由内容区自己的「正在加载片库」态呈现，不映射成下拉刷新态，
-        // 否则容器指示器会与页面中央的加载圈同时出现（双进度圈）。
-        isRefreshing = isRefreshing,
-        onRefresh = {
-            if (isRepoLoading) return@StandardPullToRefreshBox
-            if (selectedSite == null) {
-                onConfigureSubscription()
-                return@StandardPullToRefreshBox
-            }
-            coroutineScope.launch {
-                isRefreshing = true
-                val result = TvBoxRepository.fetchRealVodData(selectedSite!!)
-                isRefreshing = false
-                if (result.isSuccess) {
-                    onShowToast("已为您从【${selectedSite?.name}】刷新最新影片")
-                } else {
-                    onShowToast("刷新失败: ${result.exceptionOrNull()?.message}")
-                }
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    ) {
-        if (realVodList.isEmpty()) {
-            if (isRepoLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(44.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = if (selectedSite != null) "正在加载【${selectedSite?.name}】片库..." else "正在连接订阅...",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudDownload,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(56.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = if (selectedSite == null) "暂未配置 TVBox 订阅源" else "【${selectedSite?.name}】暂无视频数据",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = if (selectedSite == null) "请点击下方按钮添加订阅地址以加载真实影视" else "可尝试下拉刷新或切换至其他可用站点",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Button(
-                            onClick = {
-                                if (selectedSite == null) {
-                                    onConfigureSubscription()
-                                } else {
-                                    coroutineScope.launch {
-                                        TvBoxRepository.fetchRealVodData(selectedSite!!)
-                                    }
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text(text = if (selectedSite == null) "配置 TVBox 订阅" else "重新刷新")
-                        }
-                    }
-                }
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = 24.dp,
-                    bottom = 96.dp
-                ),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(
-                    items = realVodList,
-                    key = { movie -> movie.id },
-                    contentType = { "vod_poster_card" }
-                ) { movie ->
-                    StandardPosterCard(
-                        title = movie.title,
-                        subtitle = movie.subtitle,
-                        score = movie.rating,
-                        posterUrl = movie.posterUrl,
-                        movieId = movie.id,
-                        sharedTransitionScope = sharedTransitionScope,
-                        animatedVisibilityScope = animatedVisibilityScope,
-                        modifier = Modifier,
-                        onClick = {
-                            onMovieClick(movie)
-                        }
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -1574,10 +1402,37 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
 }
 
 // -------------------------------------------------------------------------------------
-// 6. 底部导航栏 (沉底铺满 + 无选中背景框，选中态仅由图标空心→实心表达)
+// 6. 底部导航栏（悬浮玻璃板：圆角矩形浮在页面之上，不再铺满屏宽到底）
 // -------------------------------------------------------------------------------------
+/** 玻璃板高度（不含底部安全区）。 */
+private val NavBarHeight = 62.dp
+
+/**
+ * 是否绘制玻璃面板（填充 + 折射 + 外缘高光）。
+ *
+ * **当前为 false：导航栏只有图标和文字，没有托底圆角矩形。**（用户 23:36 确认这样最好看）
+ *
+ * 为什么做成开关而不是删掉：这块圆的实现是对的（先 clip 再画、折射用竖直渐变），
+ * 只是半透明面板在浅色页面上会近白、在深色海报上又近底色，两页观感对不上 ——
+ * 面板本身成了「多余的色块」。留着开关，以后想要托底直接翻 true。
+ */
+private const val NavBarGlassPanel = false
+/** 玻璃板与屏幕左右边的留白：留白 + 圆角才读得出「悬浮」。 */
+internal val NavBarSideMargin = 16.dp
+/** 玻璃板与底部安全区之间的留白。 */
+internal val NavBarBottomGap = 10.dp
+private val NavBarCorner = 28.dp
+private val NavBarShape = RoundedCornerShape(NavBarCorner)
+
 @Composable
-fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit) {
+fun AnimatedBottomNavigationBar(
+    selectedIndex: Int,
+    onTabSelected: (Int) -> Unit,
+    /** 首页滚动状态；非首页传 null，导航栏按主题底色渲染。 */
+    homeScrollState: ScrollState? = null,
+    /** 首页海报高度（px），用来换算「滚过多少就该从透明变成实底」。 */
+    heroHeightPx: Float = 0f
+) {
     val tabs = remember {
         listOf(
             "首页" to NavGlyph.Home,
@@ -1587,37 +1442,142 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
             "我的" to NavGlyph.Profile
         )
     }
-    val primary = MaterialTheme.colorScheme.primary
-    val idleTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f)
-    // 选中态不再绘制任何胶囊/描边背景：视觉变化只落在图标本身（空心 → 实心）
 
-    Column(
+    // 刚进首页时海报铺到屏幕底部，此时玻璃板要用深色（白字），滚过遮罩半程后再换成
+    // 浅色玻璃（深字）。二值判断 + 颜色动画，不做逐帧插值：每滚一帧读 scrollState
+    // 会让整个导航栏每帧重组。
+    val immersive by remember(homeScrollState, selectedIndex, heroHeightPx) {
+        derivedStateOf {
+            homeScrollState != null &&
+                selectedIndex == 0 &&
+                heroHeightPx > 0f &&
+                homeScrollState.value < heroHeightPx * VEIL_FRACTION * 0.5f
+        }
+    }
+
+    val scheme = MaterialTheme.colorScheme
+    val lightSurface = scheme.surface.luminance() > 0.5f
+
+    // 玻璃基色。**压得很低**：液态玻璃要能看见背后，0.7 以上就退化成一块实底塑料。
+    // 压在暗海报上还可以更低（0.22）：背后内容是「已渐隐到底色」的平面，不需要面板挡。
+    val panelTint by animateColorAsState(
+        targetValue = if (immersive) HomeBaseColor.copy(alpha = 0.22f)
+        else scheme.surface.copy(alpha = 0.38f),
+        animationSpec = tween(320),
+        label = "navGlassPanel"
+    )
+    // 折射/高光的强度：暗态压在海报上时收一点，浅底上给足，否则边界糊在背景里。
+    val rimAlpha by animateFloatAsState(
+        targetValue = if (immersive) 0.34f else if (lightSurface) 0.62f else 0.30f,
+        animationSpec = tween(320),
+        label = "navGlassRim"
+    )
+
+    val primary = scheme.primary
+    val idleTint = scheme.onSurfaceVariant.copy(alpha = 0.92f)
+    // 实心图标的挖空色（电视机的播放三角）= 面板实际可见色。
+    val knockout by animateColorAsState(
+        targetValue = if (immersive) HomeBaseColor else scheme.surface,
+        animationSpec = tween(320),
+        label = "navKnockout"
+    )
+
+    // 悬浮定位：左右留边 + 底部让出系统手势条再留一点空隙，面板才「浮」起来。
+    // 这段内边距会算进 Scaffold 的 bottomBar 高度，因此各页 contentPadding 自动跟着变。
+    val navBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+            .padding(
+                start = NavBarSideMargin,
+                end = NavBarSideMargin,
+                bottom = navBottomInset + NavBarBottomGap
+            )
     ) {
-        // 顶部分割细线：让导航栏与内容区在浅色底上有明确边界
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(0.5.dp)
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-        )
-
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .height(64.dp)
+                .height(NavBarHeight)
+                // **先裁成圆角矩形，再画所有像素**。顺序是关键：
+                // 上一版是 shadow → drawWithCache → clip，绘制发生在裁切之前，
+                // 整行宽度的绘制区域（含 18dp 阴影图层）会盖在页面之上 ——
+                // 分类页截图里「铺满屏宽的白色层」就是这块。裁切前置后，任何一笔
+                // 都不可能超出这块圆角矩形，问题在结构上被消掉，不靠调参。
+                .clip(NavBarShape)
+                .drawBehind {
+                    if (!NavBarGlassPanel) return@drawBehind
+                    val cornerPx = NavBarCorner.toPx()
+                    val hairPx = 1.dp.toPx()
+                    val refrPx = 9.dp.toPx()
+                    val w = size.width
+                    val h = size.height
+
+                    // 上淡下实：玻璃有厚度，光穿下来会衰减。三档之间的幅度压得很小，
+                    // 否则半透明面板会在中间那道停靠点上透出一条横向色阶。
+                    val fill = Brush.verticalGradient(
+                        0f to panelTint.copy(alpha = panelTint.alpha * 0.62f),
+                        0.46f to panelTint.copy(alpha = panelTint.alpha * 0.92f),
+                        1f to panelTint.copy(
+                            alpha = (panelTint.alpha * 1.12f).coerceAtMost(1f)
+                        )
+                    )
+                    // 边缘光：左上最亮、右下最弱 —— 光源固定在上方，与 iOS 液态玻璃一致。
+                    val rim = Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = rimAlpha),
+                            Color.White.copy(alpha = rimAlpha * 0.22f),
+                            Color.White.copy(alpha = rimAlpha * 0.04f),
+                            Color.White.copy(alpha = rimAlpha * 0.42f)
+                        ),
+                        start = Offset(0f, 0f),
+                        end = Offset(w, h)
+                    )
+                    // 折射带：贴着上沿的一条白光，向下快速消失，模拟「光从玻璃上边缘折进来」。
+                    // 纯白等宽描边是一圈发光的塑料边，竖直渐变才像折射。
+                    val refraction = Brush.verticalGradient(
+                        0f to Color.White.copy(alpha = rimAlpha * 0.30f),
+                        0.22f to Color.White.copy(alpha = rimAlpha * 0.10f),
+                        0.55f to Color.White.copy(alpha = 0f),
+                        1f to Color.White.copy(alpha = 0f)
+                    )
+
+                    drawRect(fill)
+                    // 内折射带：内缩 2dp 起画，宽度 9dp，只在上半部有亮度。
+                    val inset = refrPx * 0.22f
+                    drawRoundRect(
+                        brush = refraction,
+                        topLeft = Offset(inset, inset),
+                        size = Size(w - inset * 2f, h - inset * 2f),
+                        cornerRadius = CornerRadius(cornerPx - inset, cornerPx - inset),
+                        style = Stroke(width = refrPx)
+                    )
+                    // 外缘 1dp 高光：把玻璃从背景里切出来。液态玻璃靠这条边立住，
+                    // 不靠投影 —— 投影在浅色页面上只会糊成一团灰。
+                    drawRoundRect(
+                        brush = rim,
+                        topLeft = Offset(hairPx / 2f, hairPx / 2f),
+                        size = Size(w - hairPx, h - hairPx),
+                        cornerRadius = CornerRadius(cornerPx - hairPx / 2f, cornerPx - hairPx / 2f),
+                        style = Stroke(width = hairPx)
+                    )
+                }
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             tabs.forEachIndexed { index, tab ->
                 val isSelected = selectedIndex == index
 
-                // 图标与文字颜色：选中态使用主题色并在 240ms 内平滑过渡
+                // 图标与文字颜色：沉浸态整体走白（压在海报上），否则用主题色，
+                // 都在 240ms 内平滑过渡。
+                val targetTint = when {
+                    immersive && isSelected -> Color.White
+                    immersive -> Color.White.copy(alpha = 0.72f)
+                    isSelected -> primary
+                    else -> idleTint
+                }
                 val glyphTint by animateColorAsState(
-                    targetValue = if (isSelected) primary else idleTint,
+                    targetValue = targetTint,
                     animationSpec = tween(240),
                     label = "navGlyphTint"
                 )
@@ -1647,8 +1607,7 @@ fun AnimatedBottomNavigationBar(selectedIndex: Int, onTabSelected: (Int) -> Unit
                                 type = tab.second,
                                 filled = filled,
                                 tint = glyphTint,
-                                // 实心电视机的播放三角挖空色 = 导航栏底色
-                                knockout = MaterialTheme.colorScheme.background,
+                                knockout = knockout,
                                 strokeWidth = if (filled) 1.8.dp else 2.1.dp
                             )
                         }

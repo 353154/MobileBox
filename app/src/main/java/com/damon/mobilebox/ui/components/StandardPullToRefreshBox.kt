@@ -1,5 +1,6 @@
 package com.damon.mobilebox.ui.components
 
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -29,6 +30,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -55,11 +57,27 @@ fun StandardPullToRefreshBox(
     val scope = rememberCoroutineScope()
     var pullJob by remember { mutableStateOf<Job?>(null) }
     var locked by remember { mutableStateOf(false) }
+    // 最近一次真实下拉的时间戳（uptimeMillis）。自愈逻辑靠它区分「正在拖」和「卡住了」。
+    val lastPullAt = remember { longArrayOf(0L) }
 
     val settleSpec = spring<Float>(
         stiffness = Spring.StiffnessMediumLow,
         dampingRatio = Spring.DampingRatioNoBouncy
     )
+
+    // 自愈：无论外部怎么把状态搞丢（加载协程被取消、请求挂住、isRefreshing 忘了复位），
+    // 只要「不在刷新 + 手指离开 1.2 秒以上 + 没有动画在跑」，就把指示器强制收回去。
+    // 之前首页下拉刷新后转圈永久挂在屏幕顶部（用户 22:13 截图），就是缺这一条兜底。
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(700)
+            val idle = SystemClock.uptimeMillis() - lastPullAt[0] > 1200
+            if (!isRefreshing && idle && !offset.isRunning && offset.value > 0f) {
+                locked = false
+                offset.animateTo(0f, settleSpec)
+            }
+        }
+    }
 
     // 外部刷新状态驱动，需区分两种来源：
     //  · 手势下拉触发 (offset > 0)：内容停在指示器高度，指示器持续可见；
@@ -91,6 +109,7 @@ fun StandardPullToRefreshBox(
                 if (locked || isRefreshing || source != NestedScrollSource.UserInput || available.y <= 0f) {
                     return Offset.Zero
                 }
+                lastPullAt[0] = SystemClock.uptimeMillis()
                 val current = offset.value
                 // 越往下拉阻力越大，形成物理阻尼手感
                 val damping = 1f / (1f + current / (thresholdPx * 2f))

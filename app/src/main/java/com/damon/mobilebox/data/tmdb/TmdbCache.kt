@@ -31,7 +31,7 @@ object TmdbCache {
      * 匹配策略版本。搜索策略变更后旧负缓存会「认死」一批本来能刮到的片，
      * 版本不一致时清空索引与负缓存、保留已刮到的条目，避免用户要等 7 天或清数据。
      */
-    private const val STRATEGY_VERSION = 6
+    private const val STRATEGY_VERSION = 7
 
     private data class Store(
         var strategy: Int = 0,

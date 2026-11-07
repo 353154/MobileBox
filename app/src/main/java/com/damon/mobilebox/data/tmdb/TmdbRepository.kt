@@ -18,6 +18,7 @@ object TmdbRepository {
 
     fun init(context: Context) {
         TmdbCache.init(context)
+        HomeCache.init(context)
     }
 
     // ---------------- 熔断 ----------------
@@ -121,6 +122,188 @@ object TmdbRepository {
         }
     }
 
+    // ---------------- 首页轮播 ----------------
+
+    private const val TRENDING_TTL_MS = 60L * 60 * 1000
+    private const val ID_INDEX_MAX = 60
+
+    /**
+     * 内存索引：`movie:123` → 完整 meta。
+     *
+     * 首页轮播点进详情只需要 tmdbId，但详情页要标题 / 简介 / 演职员 / 剧照一整套。
+     * 轮播本身就来自本进程的请求，顺手把整份 meta 留在内存里，进详情时零请求、
+     * 首帧就有内容；只有进程被杀后冷启动直达详情页才会走 [load] 重新拉。
+     * 用 LRU 上限 60 条：一屏轮播最多 8 条，翻两次也到不了上限。
+     */
+    private val idIndex = object : java.util.LinkedHashMap<String, TmdbMeta>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TmdbMeta>?): Boolean =
+            size > ID_INDEX_MAX
+    }
+
+    private fun indexKey(mediaType: String, tmdbId: Int) = "$mediaType:$tmdbId"
+
+    private fun remember(meta: TmdbMeta): TmdbMeta {
+        synchronized(idIndex) { idIndex[indexKey(meta.mediaType, meta.tmdbId)] = meta }
+        return meta
+    }
+
+    @Volatile
+    private var trendingAt = 0L
+
+    @Volatile
+    private var trendingList: List<TmdbMeta> = emptyList()
+
+    /**
+     * 首页 Hero 轮播：TMDB 本周趋势。
+     *
+     * 只留同时有 `backdrop_path` 与 `overview` 的条目 —— 轮播是大图 + 文案叠加，
+     * 缺其中任何一个都会空出半屏。标题去重（趋势榜常有同名的电影与剧集重剪版）。
+     *
+     * 只有 `media_type` / `vote_average` / `genre_ids`（未翻译），所以**不带类型标签**，
+     * 底部信息行只显示「电影 / 剧集 · 年份 · 评分」。类型名要额外打五次详情才能拿到，
+     * 为了几行小字多花五倍请求不划算；详情页会补上。
+     */
+    suspend fun trending(limit: Int = 8, force: Boolean = false): List<TmdbMeta> {
+        if (!force && trendingList.isNotEmpty() && SystemClock.elapsedRealtime() - trendingAt < TRENDING_TTL_MS) {
+            return trendingList.take(limit)
+        }
+        val body = request("/3/trending/all/week", mapOf("language" to LANGUAGE))
+            ?: return trendingList.take(limit)
+        val parsed = runCatching { gson.fromJson(body, TmdbSearchResponse::class.java) }.getOrNull()
+        val items = parsed?.results.orEmpty()
+            .filter { item ->
+                item.id > 0 &&
+                    (item.mediaType == "movie" || item.mediaType == "tv") &&
+                    !item.backdropPath.isNullOrBlank() &&
+                    !item.overview.isNullOrBlank()
+            }
+            .distinctBy { it.displayTitle.trim() }
+            .take(limit)
+            .map { item ->
+                val type = item.mediaType ?: "movie"
+                TmdbMeta(
+                    tmdbId = item.id,
+                    mediaType = type,
+                    title = item.displayTitle.trim(),
+                    overview = item.overview.orEmpty().trim(),
+                    voteAverage = item.voteAverage ?: 0.0,
+                    voteCount = item.voteCount ?: 0,
+                    year = item.yearText,
+                    posterUrl = TmdbImage.poster(item.posterPath),
+                    backdropUrl = TmdbImage.backdrop(item.backdropPath),
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        if (items.isNotEmpty()) {
+            items.forEach { remember(it) }
+            trendingList = items
+            trendingAt = SystemClock.elapsedRealtime()
+            android.util.Log.d("MB-TMDB", "trending -> ${items.size} items")
+        }
+        return items
+    }
+
+    // ---------------- 首页横滑榜单 ----------------
+
+    private const val ROW_TTL_MS = 30L * 60 * 1000
+
+    private class RowEntry(val at: Long, val items: List<TmdbMeta>)
+
+    /** 以请求路径为 key 的 30 分钟内存缓存。首页四行最多四个 key，不需要淘汰策略。 */
+    private val rowCache = java.util.concurrent.ConcurrentHashMap<String, RowEntry>()
+
+    /**
+     * 首页横滑行数据：TMDB 现成的榜单接口（正在热映 / 正在播出 / 高分佳作）。
+     *
+     * 与 [trending] 的差别：这里**必须有竖版海报**（横滑是海报墙，缺图的卡片会露出空槽），
+     * 简介允许为空（卡片不展示简介）。失败时返回上一次的缓存而不是空列表，
+     * 免得一次网络抖动把整屏内容清空。
+     */
+    private suspend fun list(path: String, mediaType: String, limit: Int, force: Boolean): List<TmdbMeta> {
+        val key = "$path|$limit"
+        if (!force) {
+            rowCache[key]?.let {
+                if (SystemClock.elapsedRealtime() - it.at < ROW_TTL_MS) return it.items
+            }
+        }
+        val body = request(path, mapOf("language" to LANGUAGE, "page" to "1"))
+            ?: return rowCache[key]?.items.orEmpty()
+        val parsed = runCatching { gson.fromJson(body, TmdbSearchResponse::class.java) }.getOrNull()
+        val items = parsed?.results.orEmpty()
+            .filter { it.id > 0 && !it.posterPath.isNullOrBlank() }
+            .mapNotNull { item ->
+                val title = item.displayTitle.trim()
+                if (title.isEmpty()) return@mapNotNull null
+                TmdbMeta(
+                    tmdbId = item.id,
+                    mediaType = mediaType,
+                    title = title,
+                    overview = item.overview.orEmpty().trim(),
+                    voteAverage = item.voteAverage ?: 0.0,
+                    voteCount = item.voteCount ?: 0,
+                    year = item.yearText,
+                    posterUrl = TmdbImage.poster(item.posterPath),
+                    backdropUrl = TmdbImage.backdrop(item.backdropPath),
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+            .distinctBy { it.title }
+            .take(limit)
+        if (items.isNotEmpty()) {
+            items.forEach { remember(it) }
+            rowCache[key] = RowEntry(SystemClock.elapsedRealtime(), items)
+        }
+        return items
+    }
+
+    /** 院线在映（含点映），国内源站覆盖最差，但海报墙最好看。 */
+    suspend fun nowPlaying(limit: Int = 14, force: Boolean = false): List<TmdbMeta> =
+        list("/3/movie/now_playing", "movie", limit, force)
+
+    /** 本周在播的剧集（不是「今日播出」，更新节奏更稳）。 */
+    suspend fun onTheAir(limit: Int = 14, force: Boolean = false): List<TmdbMeta> =
+        list("/3/tv/on_the_air", "tv", limit, force)
+
+    /** 影史高分，用来兜住「最近没好片」时的页面观感。 */
+    suspend fun topRated(limit: Int = 14, force: Boolean = false): List<TmdbMeta> =
+        list("/3/movie/top_rated", "movie", limit, force)
+
+    /** 轮播点进详情时先用内存里的那份，命中就不必再等网络。 */
+    fun peek(mediaType: String, tmdbId: Int): TmdbMeta? =
+        synchronized(idIndex) { idIndex[indexKey(mediaType, tmdbId)] }
+
+    /** 内存没有（冷启动直达）才按 id 拉一次完整详情。失败返回 null，不抛给 UI。 */
+    suspend fun load(mediaType: String, tmdbId: Int): TmdbMeta? {
+        val cached = peek(mediaType, tmdbId)
+        // 轮播那份来自 /trending，只有标题 / 图 / 简介 / 评分，**没有演职员和剧照**。
+        // 所以「命中就不请求」是错的：详情页要用这两块，缺了必须补一次完整详情。
+        if (cached != null && (cached.cast.isNotEmpty() || cached.stills.isNotEmpty())) return cached
+        val detail = fetchDetail(tmdbId, mediaType) ?: return cached
+        val title = detail.title ?: detail.name.orEmpty()
+        if (title.isBlank()) return cached
+        val logo = pickLogo(detail.images)
+        return remember(
+            TmdbMeta(
+                tmdbId = tmdbId,
+                mediaType = mediaType,
+                title = title,
+                overview = detail.overview.orEmpty().trim(),
+                voteAverage = detail.voteAverage ?: 0.0,
+                voteCount = detail.voteCount ?: 0,
+                year = (detail.releaseDate ?: detail.firstAirDate).orEmpty().take(4),
+                genres = detail.genres.orEmpty()
+                    .mapNotNull { TmdbGenreZh.of(it.name).takeIf(String::isNotBlank) },
+                posterUrl = TmdbImage.poster(detail.posterPath),
+                backdropUrl = TmdbImage.backdrop(detail.backdropPath),
+                logoUrl = logo?.first.orEmpty(),
+                logoAspect = logo?.second ?: 0f,
+                cast = pickCast(detail),
+                stills = pickStills(detail),
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
     // ---------------- 搜索 ----------------
 
     private sealed class SearchOutcome {
@@ -171,24 +354,26 @@ object TmdbRepository {
         val detail = fetchDetail(best.id, effectiveType)
 
         return SearchOutcome.Found(
-            TmdbMeta(
-                tmdbId = best.id,
-                mediaType = effectiveType,
-                title = best.displayTitle,
-                overview = detail?.overview?.takeIf { it.isNotBlank() }
-                    ?: best.overview.orEmpty(),
-                voteAverage = detail?.voteAverage ?: best.voteAverage ?: 0.0,
-                voteCount = detail?.voteCount ?: best.voteCount ?: 0,
-                year = (detail?.releaseDate ?: detail?.firstAirDate).orEmpty().take(4)
-                    .ifBlank { best.yearText },
-                genres = detail?.genres.orEmpty()
-                    .mapNotNull { TmdbGenreZh.of(it.name).takeIf(String::isNotBlank) },
-                posterUrl = TmdbImage.poster(detail?.posterPath ?: best.posterPath),
-                backdropUrl = TmdbImage.backdrop(detail?.backdropPath ?: best.backdropPath),
-                cast = pickCast(detail),
-                stills = pickStills(detail),
-                score = score,
-                updatedAt = System.currentTimeMillis()
+            remember(
+                TmdbMeta(
+                    tmdbId = best.id,
+                    mediaType = effectiveType,
+                    title = best.displayTitle,
+                    overview = detail?.overview?.takeIf { it.isNotBlank() }
+                        ?: best.overview.orEmpty(),
+                    voteAverage = detail?.voteAverage ?: best.voteAverage ?: 0.0,
+                    voteCount = detail?.voteCount ?: best.voteCount ?: 0,
+                    year = (detail?.releaseDate ?: detail?.firstAirDate).orEmpty().take(4)
+                        .ifBlank { best.yearText },
+                    genres = detail?.genres.orEmpty()
+                        .mapNotNull { TmdbGenreZh.of(it.name).takeIf(String::isNotBlank) },
+                    posterUrl = TmdbImage.poster(detail?.posterPath ?: best.posterPath),
+                    backdropUrl = TmdbImage.backdrop(detail?.backdropPath ?: best.backdropPath),
+                    cast = pickCast(detail),
+                    stills = pickStills(detail),
+                    score = score,
+                    updatedAt = System.currentTimeMillis()
+                )
             )
         )
     }
@@ -257,6 +442,72 @@ object TmdbRepository {
             .filter { (it.width ?: 0) >= 780 }
             .mapNotNull { TmdbImage.still(it.filePath).takeIf(String::isNotBlank) }
             .distinct()
+
+    // ---------------- 片名 logo（透明 PNG） ----------------
+
+    /** logo 选中结果：URL + 宽高比。宽高比用来在 UI 里定宽，避免拉伸。 */
+    private class Logo(val url: String, val aspect: Float)
+
+    /**
+     * 从 `images.logos` 里挑一张。
+     *
+     *  · 语言优先级 zh > en > 无语言（纯图形标识）> 其它；
+     *  · **只收 `.png`**：TMDB 的 logos 里混着 `.svg`，Coil 没有 SVG 解码器，收进来就是空白；
+     *  · 同语言取最宽的一张（分辨率越高越清楚）；
+     *  · 宽高比 < 1.1 的竖版 / 方形 logo 直接跳过 —— 贴在海报左下角会变成一个矮方块。
+     */
+    private fun pickLogo(images: TmdbImages?): Pair<String, Float>? {
+        val logos = images?.logos.orEmpty().filter {
+            val path = it.filePath
+            !path.isNullOrBlank() &&
+                path.endsWith(".png", ignoreCase = true) &&
+                (it.aspectRatio ?: 0.0) >= 1.1
+        }
+        if (logos.isEmpty()) return null
+        val rank = { lang: String? ->
+            when (lang) {
+                "zh" -> 0
+                "en" -> 1
+                null, "" -> 2
+                else -> 3
+            }
+        }
+        val best = logos.minWithOrNull(
+            compareBy({ rank(it.language) }, { -(it.width ?: 0) })
+        ) ?: return null
+        val url = TmdbImage.logo(best.filePath)
+        if (url.isBlank()) return null
+        return url to (best.aspectRatio ?: 0.0).toFloat()
+    }
+
+    /** 每个条目的 logo 只查一次（含「确实没有」的负结果），进程内永久缓存。 */
+    private val logoCache = java.util.concurrent.ConcurrentHashMap<String, Logo>()
+
+    /**
+     * 给单条轮播补片名 logo，查到就返回新对象、没有就原样返回。
+     *
+     * 轮播数据来自 `/trending`（列表接口，**不带 images**），所以只能按 id 单独查
+     * `/3/{type}/{id}/images`。**刻意只做单条**：调用方并发跑八条，谁先回来谁先换，
+     * 不攒批 —— 原来 `withLogos` 要等最慢的一条，片名（尤其首屏那一条）就得陪着一起等。
+     */
+    suspend fun logoOf(meta: TmdbMeta): TmdbMeta {
+        if (meta.logoUrl.isNotBlank()) return meta
+        val key = indexKey(meta.mediaType, meta.tmdbId)
+        val logo = logoCache[key]
+            ?: fetchLogo(meta.mediaType, meta.tmdbId).also { logoCache[key] = it }
+        return if (logo.url.isBlank()) meta
+        else meta.copy(logoUrl = logo.url, logoAspect = logo.aspect)
+    }
+
+    private suspend fun fetchLogo(mediaType: String, tmdbId: Int): Logo {
+        val body = request(
+            "/3/$mediaType/$tmdbId/images",
+            mapOf("include_image_language" to "zh,en,null")
+        ) ?: return Logo("", 0f)
+        val parsed = runCatching { gson.fromJson(body, TmdbImages::class.java) }.getOrNull()
+        val pick = pickLogo(parsed) ?: return Logo("", 0f)
+        return Logo(pick.first, pick.second)
+    }
 
     // ---------------- 路线编排 ----------------
 

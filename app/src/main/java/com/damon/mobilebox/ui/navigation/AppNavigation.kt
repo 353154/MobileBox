@@ -75,6 +75,15 @@ fun AppNavigation(themeManager: ThemeManager) {
                         val encodedPoster = try { URLEncoder.encode(movie.posterUrl, "UTF-8") } catch (_: Exception) { "" }
                         navController.navigate("detail/${movie.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
                     },
+                    // 首页 Hero 轮播：内容来自 TMDB，没有采集站 id，所以走独立路由。
+                    // 详情页拿到 type + tmdbId 自己去取详情，并回订阅源搜可播条目。
+                    onNavigateToTmdbDetail = { meta ->
+                        val encodedTitle = try { URLEncoder.encode(meta.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(meta.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate(
+                            "detail/tmdb/${meta.mediaType}/${meta.tmdbId}?title=$encodedTitle&poster=$encodedPoster"
+                        )
+                    },
                     onNavigateToSearch = { navController.navigate("search") },
                     onNavigateToWatchList = { type ->
                         navController.navigate("watchlist/${type.name}")
@@ -136,6 +145,41 @@ fun AppNavigation(themeManager: ThemeManager) {
                     videoData = effectiveDetail,
                     resumePositionMs = resumePositionMs,
                     resumeEpisodeId = resumeEpisodeId,
+                    sharedTransitionScope = this@SharedTransitionLayout,
+                    animatedVisibilityScope = this@composable,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(
+                route = "detail/tmdb/{type}/{tmdbId}?title={title}&poster={poster}",
+                arguments = listOf(
+                    navArgument("type") { type = NavType.StringType },
+                    navArgument("tmdbId") { type = NavType.IntType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("poster") { type = NavType.StringType; defaultValue = "" }
+                )
+            ) { backStackEntry ->
+                val type = backStackEntry.arguments?.getString("type").orEmpty()
+                val tmdbId = backStackEntry.arguments?.getInt("tmdbId") ?: 0
+                val rawTitle = backStackEntry.arguments?.getString("title").orEmpty()
+                val rawPoster = backStackEntry.arguments?.getString("poster").orEmpty()
+                val routeTitle = try { URLDecoder.decode(rawTitle, "UTF-8") } catch (_: Exception) { rawTitle }
+                val routePoster = try { URLDecoder.decode(rawPoster, "UTF-8") } catch (_: Exception) { rawPoster }
+                // 轮播卡片本身没有 sharedBounds（不在海报网格里），这里的 key 只是让
+                // 详情页在栈上期间不误伤首页海报的 3D 状态；不会命中任何卡片，等于无操作。
+                val tmdbKey = "tmdb:$type:$tmdbId"
+                DisposableEffect(tmdbKey) {
+                    SharedPosterTransition.activeKey.value = "poster_$tmdbKey"
+                    onDispose { SharedPosterTransition.activeKey.value = null }
+                }
+
+                MovieDetailScreen(
+                    movieId = tmdbKey,
+                    initialTitle = routeTitle,
+                    posterUrl = routePoster,
+                    videoData = null,
+                    tmdbType = type,
+                    tmdbId = tmdbId,
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@composable,
                     onBack = { navController.popBackStack() }

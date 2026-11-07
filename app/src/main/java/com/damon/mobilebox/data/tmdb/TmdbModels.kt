@@ -26,6 +26,14 @@ object TmdbImage {
     /** 演员头像：w185 已经够 54dp 圆头像用，再大就是浪费流量。 */
     fun profile(path: String?): String =
         path?.takeIf { it.isNotBlank() }?.let { BASE + "w185" + it }.orEmpty()
+
+    /**
+     * 片名 logo：TMDB 的 `images.logos` 是**带透明通道的 PNG**（官方 title treatment），
+     * 很多是彩色或纯白艺术字，直接贴在海报上比 Text 标题好看得多。
+     * 尺寸用 w500 —— 首页高度 56dp 左右，w500 已经超过 3 倍屏密度，再大纯浪费。
+     */
+    fun logo(path: String?): String =
+        path?.takeIf { it.isNotBlank() }?.let { BASE + "w500" + it }.orEmpty()
 }
 
 // ---------------- 搜索 ----------------
@@ -108,13 +116,19 @@ internal data class TmdbCrewMember(
 )
 
 internal data class TmdbImages(
-    val backdrops: List<TmdbImageItem>? = null
+    val backdrops: List<TmdbImageItem>? = null,
+    /** 片名 logo（透明 PNG）。详情页与首页轮播都用它替代纯文本标题。 */
+    val logos: List<TmdbImageItem>? = null
 )
 
 internal data class TmdbImageItem(
     @SerializedName("file_path") val filePath: String? = null,
     val width: Int? = null,
-    val height: Int? = null
+    val height: Int? = null,
+    /** logos 专属：语言码（zh / en / null = 无对白图形标识）。 */
+    @SerializedName("iso_639_1") val language: String? = null,
+    /** logos 专属：宽高比，UI 直接按它算宽，避免拉伸。 */
+    @SerializedName("aspect_ratio") val aspectRatio: Double? = null
 )
 
 internal data class TmdbGenre(
@@ -184,6 +198,10 @@ data class TmdbMeta(
     val genres: List<String> = emptyList(),
     val posterUrl: String = "",
     val backdropUrl: String = "",
+    /** 透明 PNG 片名 logo；空串表示 TMDB 没有，UI 退回纯文本标题。 */
+    val logoUrl: String = "",
+    /** logo 的宽高比（宽/高）。0 表示未知，UI 按 3:1 兜底。 */
+    val logoAspect: Float = 0f,
     /** 演职人员：导演在前，其后按 TMDB 戏份排序，已裁到 12 条（够横滑一屏，也不撑爆缓存）。 */
     val cast: List<TmdbPerson> = emptyList(),
     /** 剧照（TMDB backdrops），不再裁剪 —— 详情页横滑 + 全屏查看器都靠它。 */

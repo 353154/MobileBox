@@ -63,6 +63,7 @@ import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
 import com.damon.mobilebox.data.tmdb.TmdbMeta
 import com.damon.mobilebox.data.tmdb.TmdbRepository
+import com.damon.mobilebox.data.tmdb.TmdbSourceFinder
 import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.data.watch.FavoriteItem
 import com.damon.mobilebox.data.watch.WatchStore
@@ -146,6 +147,10 @@ fun MovieDetailScreen(
     initialTitle: String = "",
     posterUrl: String = "",
     videoData: VideoDetailData? = null,
+    /** 非空表示从 TMDB 条目（首页轮播）进入：movie / tv。 */
+    tmdbType: String? = null,
+    /** 与 [tmdbType] 配对使用，>0 才认作 TMDB 入口。 */
+    tmdbId: Int = 0,
     /** 从观看历史进入时的续播位置（毫秒），0 表示正常浏览态。 */
     resumePositionMs: Long = 0L,
     /** 从观看历史进入时要自动起播的集数；>0 才会触发自动播放。 */
@@ -167,15 +172,30 @@ fun MovieDetailScreen(
     // 片名底部仍落在 heroHeight 处，首屏视觉零变化；而滚动止步于状态栏下沿。
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
+    // ---- TMDB 条目入口（首页 Hero 轮播）----
+    // 从轮播进来只有 tmdbId，页面上的一切以 TMDB 为准；播放源靠片名回订阅源现搜。
+    // 搜不到不算错误：简介 / 演职员 / 剧照都在，只是「播放资源」区块变成一句说明。
+    val isTmdbEntry = tmdbType != null && tmdbId > 0
+    // 轮播时已经拉过整份 meta，内存里那份直接拿来用；只有冷启动直达才等网络。
+    var tmdbMeta by remember(movieId) {
+        mutableStateOf(if (isTmdbEntry) TmdbRepository.peek(tmdbType!!, tmdbId) else null)
+    }
+    // 回源站找播放源的进度：UI 要区分「还在搜」和「确实没有」，否则用户不知道该等等还是换源。
+    var sourceState by remember(movieId) { mutableStateOf(SourceLookup.Idle) }
+    var sourcedDetail by remember(movieId) { mutableStateOf<VideoDetailData?>(null) }
+
     // 首帧直接透传真实数据，杜绝片名闪烁
-    val finalData = remember(movieId, videoData, posterUrl, initialTitle) {
+    val finalData = remember(movieId, videoData, posterUrl, initialTitle, tmdbMeta, sourcedDetail) {
         val base = videoData ?: TvBoxRepository.selectedDetail?.takeIf { it.id.trim() == movieId.trim() }
         ?: TvBoxRepository.realVodList.value.find { it.id.trim() == movieId.trim() }
         ?: TvBoxRepository.categoryVodList.value.find { it.id.trim() == movieId.trim() }
-        if (base != null) {
-            if (base.title.isBlank() && initialTitle.isNotBlank()) base.copy(title = initialTitle) else base
-        } else {
-            VideoDetailData.createFromMovie(
+        when {
+            // 找到源了：底座用源站（线路 / 集数 / 演员名），文案与图覆盖成 TMDB 的。
+            sourcedDetail != null -> sourcedDetail!!.withTmdbCopy(tmdbMeta)
+            isTmdbEntry -> tmdbOnlyData(movieId, tmdbMeta, initialTitle, posterUrl)
+            base != null ->
+                if (base.title.isBlank() && initialTitle.isNotBlank()) base.copy(title = initialTitle) else base
+            else -> VideoDetailData.createFromMovie(
                 id = movieId,
                 title = initialTitle.ifBlank { "影片详情" },
                 subtitle = "高清原画",
@@ -184,11 +204,26 @@ fun MovieDetailScreen(
             )
         }
     }
+
+    // TMDB 入口：补 meta（轮播那份不含演职员 / 剧照，要再拉一次详情）→ 拿片名回订阅源找可播条目。
+    // 两步都是异步的：页面先把标题 / 海报 / 简介渲染出来，不要空等。
+    LaunchedEffect(movieId, tmdbType, tmdbId) {
+        if (!isTmdbEntry) return@LaunchedEffect
+        // load 内部会判断「内存这份是否完整」：完整就直接返回，缺演职员/剧照才发请求。
+        TmdbRepository.load(tmdbType!!, tmdbId)?.let { tmdbMeta = it }
+        val meta = tmdbMeta ?: return@LaunchedEffect
+        sourceState = SourceLookup.Searching
+        val found = runCatching { TmdbSourceFinder.find(meta) }.getOrNull()
+        sourcedDetail = found
+        sourceState = if (found != null) SourceLookup.Found else SourceLookup.NotFound
+    }
+
     // ---- TMDB 元数据增强（异步，不阻塞首屏）----
     // 订阅源数据先渲染，刮削结果回来只替换对应字段；失败就保持原样，不弹错误也不显示空态。
     // 电影/剧集共用同一条路径，类型由分类名与副标题推断（见 TmdbMatcher.guessType）。
-    var tmdbMeta by remember(movieId) { mutableStateOf<TmdbMeta?>(null) }
     LaunchedEffect(movieId, finalData.title) {
+        // TMDB 入口的 meta 是「本来就是 TMDB 的」，不要再按片名刮一遍（会刮成同名的另一部）。
+        if (isTmdbEntry) return@LaunchedEffect
         tmdbMeta = null
         if (finalData.title.isBlank()) return@LaunchedEffect
         tmdbMeta = TmdbRepository.enrich(
@@ -454,23 +489,38 @@ fun MovieDetailScreen(
     }
 
     var selectedRouteIndex by remember { mutableIntStateOf(0) }
-    val currentRoute = mergedData.routes.getOrNull(selectedRouteIndex) ?: mergedData.routes.first()
+    // TMDB 入口在搜到源之前 routes 是空的，这里必须给一个空线路兜底 ——
+    // 直接 first() 会在「刚从轮播点进来」的那一帧抛 NoSuchElementException。
+    val currentRoute = mergedData.routes.getOrNull(selectedRouteIndex)
+        ?: mergedData.routes.firstOrNull()
+        ?: EmptyRoute
     // 刻意不以 selectedRouteIndex 作 remember key：自动换源是在组合之外的回调里写这个状态，
     // 带 key 的话下一次重组会重建 State、把刚写进去的「同一集」覆盖回第一集。
     // 切线路统一由 onSelect / startPlayback / onSourceFailed 显式重置。
     var selectedEpisodeId by remember {
         mutableIntStateOf(currentRoute.episodes.firstOrNull()?.episodeId ?: 1)
     }
+    // TMDB 入口的线路是后到的（异步搜源），初值只能给 1；源站第一集未必是 1，
+    // 这里在「当前集不在新线路里」时归位，否则选集条会一个都不高亮。
+    LaunchedEffect(mergedData.routes) {
+        val route = mergedData.routes.getOrNull(selectedRouteIndex) ?: return@LaunchedEffect
+        if (route.episodes.none { it.episodeId == selectedEpisodeId }) {
+            selectedEpisodeId = route.episodes.firstOrNull()?.episodeId ?: 1
+        }
+    }
     // 追剧改为真持久化：退出页面、切 Tab、重启都保留，两个播放页共用同一份收藏表。
     val favorites by WatchStore.favorites.collectAsState()
-    val isFavorite = favorites.any { it.videoId == movieId }
+    // 用 finalData.id 而不是 movieId：TMDB 入口的 movieId 是 "tmdb:..."，
+    // 找到源之后真正的收藏 key 是源站 id，否则这一页永远显示未收藏。
+    val isFavorite = favorites.any { it.videoId == finalData.id }
 
     // 「追剧」已从底部工具条上移：浏览态与「立即播放」并排，播放态在「选集」标题右侧，
     // 两处共用这一份点击逻辑与提示文案。
     val toggleFavorite = {
         WatchStore.toggleFavorite(
             FavoriteItem(
-                videoId = movieId,
+                // 与 isFavorite 同一口径：找到源之后用源站 id，追剧清单才能正常回跳详情页。
+                videoId = finalData.id,
                 title = finalData.title,
                 posterUrl = effectivePosterUrl
             )
@@ -997,6 +1047,30 @@ fun MovieDetailScreen(
                             ) {
                                 SectionTitle("播放资源")
                                 Spacer(modifier = Modifier.height(12.dp))
+                                if (mergedData.routes.isEmpty()) {
+                                    // TMDB 入口在搜到源之前 / 确实搜不到，都走这里。
+                                    // 未搜完不叫「没有」，两者的文案必须分开，否则用户会以为坏了。
+                                    Text(
+                                        text = when (sourceState) {
+                                            SourceLookup.Searching -> "正在搜索播放源…"
+                                            SourceLookup.NotFound -> "订阅源里没找到这部片的播放地址"
+                                            else -> "暂时没有可用的播放源"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = LocalBTextColors.current.primary.copy(alpha = 0.7f),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 6.dp)
+                                    )
+                                    if (sourceState == SourceLookup.NotFound) {
+                                        Text(
+                                            text = "换一个订阅源，或在首页搜索片名看看",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = LocalBTextColors.current.primary.copy(alpha = 0.5f),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                } else {
                                 // 「追剧」紧贴「立即播放」：同一部片的两个主操作并排，
                                 // 底部操作行回到纯工具条（缓存 / 投屏 / 分享）。
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1071,6 +1145,7 @@ fun MovieDetailScreen(
                                         }
                                     )
                                 }
+                                } // routes.isEmpty() 的 else 结束
                             }
                             } // 浏览态专属内容到这里结束；以下 5 组播放态同样保留
 
@@ -1674,3 +1749,63 @@ private fun Modifier.entranceMotion(elapsed: () -> Float, order: Int, rise: Dp =
         alpha = p
         translationY = (1f - p) * rise.toPx()
     }
+
+// -------------------------------------------------------------------------------------
+// TMDB 条目入口（首页 Hero 轮播 → 详情页）
+// -------------------------------------------------------------------------------------
+
+/** 回订阅源找播放源的三态。Idle 只在站内入口出现（那里本来就带着线路）。 */
+private enum class SourceLookup { Idle, Searching, Found, NotFound }
+
+/** 空线路兜底：routes 为空时所有 `currentRoute.episodes` 取值都靠它保持非空。 */
+private val EmptyRoute = VideoRoute(routeId = "", routeName = "", tag = "", episodes = emptyList())
+
+/** 只有 TMDB 数据、还没有播放源时的详情底座。绝不带测试流 —— 那会放错片。 */
+private fun tmdbOnlyData(
+    movieId: String,
+    meta: TmdbMeta?,
+    fallbackTitle: String,
+    fallbackPoster: String
+): VideoDetailData {
+    val title = meta?.title?.takeIf { it.isNotBlank() }
+        ?: fallbackTitle.ifBlank { "影片详情" }
+    // 票数太少不采信评分（与详情页其它位置同一口径），这里先取出来避免 lambda 里 smart cast 失败。
+    val vote = meta?.voteAverage ?: 0.0
+    val voteCount = meta?.voteCount ?: 0
+    return VideoDetailData(
+        id = movieId,
+        title = title,
+        subtitle = if (meta?.mediaType == "tv") "剧集" else "电影",
+        rating = if (vote > 0.0 && voteCount >= 10) "%.1f".format(vote) else "",
+        year = meta?.year.orEmpty(),
+        category = meta?.genres?.firstOrNull().orEmpty(),
+        tags = meta?.genres.orEmpty(),
+        description = meta?.overview.orEmpty(),
+        posterUrl = meta?.posterUrl?.takeIf { it.isNotBlank() } ?: fallbackPoster,
+        routes = emptyList()
+    )
+}
+
+/**
+ * 找到订阅源之后合成展示数据：线路 / 集数 / 演职员用源站，文案与年份评分用 TMDB。
+ *
+ * 为什么不整份用 TMDB：TMDB 没有可播地址；为什么不整份用源站：源站简介常带站点广告、
+ * 评分随手填、也没有剧照。两边各取所长。
+ */
+private fun VideoDetailData.withTmdbCopy(meta: TmdbMeta?): VideoDetailData {
+    val m = meta ?: return this
+    return copy(
+        title = m.title.takeIf { it.isNotBlank() } ?: title,
+        description = m.overview.takeIf { it.isNotBlank() } ?: description,
+        year = m.year.takeIf { it.isNotBlank() } ?: year,
+        rating = m.voteAverage
+            .takeIf { it > 0.0 && m.voteCount >= 10 }
+            ?.let { "%.1f".format(it) }
+            ?: rating,
+        category = category.takeIf { it.isNotBlank() && it != "影视" }
+            ?: m.genres.firstOrNull().orEmpty(),
+        // TMDB 的类型是标准分类，比源站的运营标签（「高清」「抢看」）更值得占位。
+        tags = m.genres.ifEmpty { tags },
+        posterUrl = posterUrl.takeIf { it.isNotBlank() } ?: m.posterUrl
+    )
+}

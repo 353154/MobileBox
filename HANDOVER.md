@@ -327,6 +327,126 @@
 - **假数据全部删除**：`TestCast`（假人名）、`TestDescription`（编造的病毒剧情）、`TestTags`（凑数的三个分类）。刮不到就整块隐藏 —— 少一个区块比给用户看编的内容好。分类 / 简介为空时连 `SectionTitle` 一起隐藏，入场 `order` 槽位保留不重排。
 - **未做 / 已知限制**：预告片播放（YouTube 不可达，除非自建转发且违反 Cloudflare 条款）；`tools/tmdb-proxy/worker.js` 里的 `/yt/thumb` 路由已成死代码；token 明文在 APK 内，仅限自用。
 
+### 8.17 首页 Hero 轮播 + TMDB 条目详情（2026-11-07 21:55 装机，用户自测）
+- **版式**（对齐用户给的参考图）：全屏大图顶到状态栏（高 = 屏高 × 0.68，clamp 420~700dp），底部 62% 高的四段黑渐变，上压 34sp 标题 / 「电影 · 年份 · ★评分」/ 两行简介，再往下是圆点，之后才是海报网格。顶部另压 150dp、0.42 透明度的渐变，否则浅色海报会把状态栏的白字吃掉。
+- **数据**：`/3/trending/all/week`（`TmdbRepository.trending`），1 小时内存缓存，只收同时有 backdrop 与 overview 的条目。信息行**不显示类型**——trending 只给 `genre_ids`，要拿中文类型名得再打 8 次详情，不值。
+- **零请求进详情**：`idIndex`（LRU 60）存整份 meta；`load()` 的规则是「缺 cast 且缺 stills 才重拉」——轮播那份来自 trending，本来就没有演职员和剧照。
+- **无限循环**用「页数 = size×5000 + 取模」，不要滚到末页再倒带；4.5 秒自动切、手指按着时跳过；图片以 0.35 倍速反向视差，位移**封顶在放大余量内**，文案层不动。
+- **首页结构变化**：`Column{TopBar; Grid}` → `Box{Grid; TopBar}`，网格左右 contentPadding 归零、列间距改由卡片自己留（首列 16/6、次列 6/16），Hero 才能 edge-to-edge 跨两列。TopBar 在 Hero 上白字、滚到列表切回主题色（判断条件是 `firstVisibleItemIndex==0 && offset < 0.8*heroHeight`）。无 Hero 时 `listTopPadding = 状态栏 + 64dp`，观感与旧版一致。
+- **点击进详情**：新路由 `detail/tmdb/{type}/{tmdbId}`。展示数据全来自 TMDB（`tmdbOnlyData` 造空线路壳，**绝不用 `createFromMovie`**，那份带测试流会放错片）；同时 `TmdbSourceFinder` 拿中文片名回订阅源找可播条目：**先查当前站（1 个请求），没命中才并发全站**，匹配沿用「标题必须相同或包含 + 年份打分」阈值 45，找到后用 `withTmdbCopy` 合成（线路用源站、文案评分用 TMDB）。
+- **空线路不能崩**：`currentRoute` 由 `routes.first()` 改为 `firstOrNull() ?: EmptyRoute`；选集 id 后到时用 `LaunchedEffect(mergedData.routes)` 归位。播放资源区区分「正在搜索播放源…」与「订阅源里没找到」，两者混用会让用户不知道是该等还是换源。
+- **收藏 / 追剧 key 用 `finalData.id`**（不是 `movieId`）：TMDB 入口的 movieId 是 `tmdb:movie:123`，写进收藏后追剧清单点进去必然找不到片。
+- **已知限制**：源站没有的片只能看详情、不能播（会明确提示）；找源最坏 6~8 秒（当前站 6s + 全站 8s 兜底）。
+- **已被 8.18 取代**：顶部栏（数据源名 + 搜索按钮）与「Hero 下方接采集源海报网格」的版式已删除，不要再按本条的 `Column{TopBar; Grid}` 理解首页。
+
+### 8.18 首页改为纯 TMDB：A/B 层级版式 + 横滑榜单（2026-11-07 22:1x 装机，用户自测）
+- **需求原话**：「第一页纯纯展示 TMDB 数据」「首页的大海报是 A 层级，其他所有元素是 B 层级」。
+- **顶部栏整块删除**：`OptimizedTopBar` 与首页的 `heroUnderTopBar` 判色逻辑一并移除（首页不再有数据源名、下拉箭头、搜索按钮）。采集源切换仍在「设置」页；`TvBoxSubscriptionDialog` 未动。
+- **搜索入口迁到「分类」页**：首页没有顶栏后 `search` 路由会失去唯一入口，因此在 `CategoryScreen` 顶部加了一行「分类 + 搜索图标」（`onSearchClick` 参数），分类页空态文案从「请前往首页添加订阅」改成「请前往设置页」。
+- **首页数据全换 TMDB**：`HomeGridContent`（采集源双列网格 + 首屏加载 / 空态 / 下拉刷新采集源）整体删除，改为 `ui/main/TmdbHomeContent.kt`，首页状态（轮播 + 三行榜单 + 刷新）自持，`AnimatedMainScreen` 不再保存任何首页 state。
+- **层级模型（照抄详情页，改之前先读文件头注释）**：
+  - **A 层** `HeroPosterPager`：只有海报本体，固定底层，**不随滚动做 Y 位移、Alpha 恒为 1、不淡出**，上滑只做 `1.0 → 1.06` 放大（Crop，不露底色）。底部厚渐变（0.74 高）最后一档直接写 `HomeBaseColor`（不透明），让海报溶进页面底色。
+  - **B 层**：片名 / 信息行 / 两行简介 / 圆点 / 三行横滑，全部在独立的全屏 `Column(verticalScroll)` 里。首块是 `height(heroHeight)` 的**透明** Box，文案底部对齐 —— scroll=0 时看起来仍压在海报下缘，滚动后整体上移经过海报。
+  - **两层之间**夹一层整屏暗遮罩，alpha 随滚动 `0 → 1`（在 62% 屏高内走完），把海报均匀压成底色。**不要用「铺满首块的黑阶渐变」**：矩形边界会切出水平硬线。
+  - ⚠️ 这一条已被 **8.19** 取代：现在是「模糊延续 + 压暗 + `surface` 遮罩」，不再压成不透明底色。
+- **为什么废掉了 22:0x 的「模糊底图 + 大图淡出」**：那一版把「海报 + 文案」放进 LazyColumn 随滚动淡出，露出底下的模糊图层；模糊图层亮度永远接不上海报底边，22:01 截图里就是一条明显断层。**A 层不位移、不淡出才是详情页的手感，别退回去。**
+- **B 层首块上的手势层**：A 层的 Pager 关掉了 `userScrollEnabled`（整屏滚动层在它上面，它永远收不到指针），横向翻页由 `detectHorizontalDragGestures` 代理到 `pagerState.dispatchRawDelta`，抬手 `animateScrollToPage` 吸附到最近页；整块海报 `clickable` 进详情。翻页页数用 `size * 1000`、数据到位后 `scrollToPage(size * 500)` 挪到中段，保证左右都能循环。
+- **三行数据**：`正在热映` = `/3/movie/now_playing`、`正在播出` = `/3/tv/on_the_air`、`高分佳作` = `/3/movie/top_rated`，各 14 条、30 分钟内存缓存（`rowCache`），**必须有竖版海报**（横滑缺图会露空槽）、标题去重。
+- **降级**：trending 挂了但榜单通 → 用「正在热映」里有大图 + 简介的条目顶替轮播；四个接口全挂才显示「内容加载失败 + 重试」，不做假数据兜底。首屏有骨架屏。
+- **Worker 白名单**已加 `/3/movie/(now_playing|upcoming|popular|top_rated)` 与 `/3/tv/(on_the_air|airing_today|popular|top_rated)`，部署版本 `db75a0f5`（直连仍是主路，Worker 只是兜底）。
+- **状态栏图标**：`TmdbHomeContent` 进来强制 `isAppearanceLightStatusBars = false`，`onDispose` 还原（与详情页同一套）。
+  - ⚠️ 这条写法有问题（会被 `AppTheme` 的 SideEffect 覆盖，实测深色图标压在暗海报上），**8.19 已改**。
+- **性能**：滚动位置只在 `graphicsLayer` 的 draw 阶段读（遮罩 alpha、海报放大），**不要**在组合阶段读 `scrollState.value` / `listState.firstVisibleItemScrollOffset`，否则每滚一帧整页重组。
+
+### 8.19 首页背景改「海报模糊延续」+ 白遮罩 + 透明 PNG 片名（2026-11-07 22:2x 装机，用户自测）
+- **需求原话**：「标题和介绍下方的区域展示海报高斯模糊的样子不要显示纯黑色背景」「随着用户滑动，b 层级背景逐渐变成白色（应该是加了遮罩）」「banner 下面的点点没有在中间」「tmdb 可以提供彩色的 png 剧名？如果可以就把剧名替换成透明 png」「刷新按钮会一直存在」「状态栏沉浸也有问题」。
+- **A 层变成三块（顺序不能换）**：
+  1. `HeroPosterPager` 清晰海报，固定不位移、只做 1.0→1.06 放大（不变）。
+  2. `HeroBlurBackdrop` **海报的模糊延续**：同一张 backdrop 全屏 `blur(40dp)`，用 **DstIn 竖向 alpha 遮罩**从 `0.55×heroHeight` 渐到 `1.0×heroHeight` 显形。画在**海报之上**是关键 —— 同一张图同一位置，衔接处是「清晰→模糊」的连续过渡，不是「图→另一张图」。22:01 的断层就是后者。
+  3. `HomeScrim` 一整条竖向压暗：`0.38×hero` 不动图 → 片名附近 0.62 → **海报下缘 0.86** → 榜单区回落到 **0.58/0.54**（用户明确要「看到模糊纹理，不要纯黑」）。**必须一条连续渐变**，拼接两块会在 heroHeight 处切出横线。
+  - API 31 以下没有 RenderEffect（`blur` 是 no-op），退化成 `alpha .42` 的压暗图，不会露出锐利重复图。
+- **遮罩（变白）**：整屏 `drawRect(colorScheme.surface, alpha = 滚动进度)`，`0.65×heroHeight` 走完。浅色主题就是「逐渐变白」，深色主题是「逐渐压暗」，与详情页 4.3 同一套口径。
+- **字色跟着遮罩走**：`homeTextColors(progress, lightSurface)` 把白 → `#111418`（深色主题 → `#EDF1F7`）做 lerp，行标题与海报下片名都吃这套，否则滚到白底就是白底白字。进度**量化成 24 档**再插值：连续 float 会让整页每滚一帧重组。
+- **片名区域整体淡出**：`HeroHeadline(fadeAlpha = …)` 在 `0.55×heroHeight` 内把整块（含圆点）alpha 从 1 降到 0。透明 PNG logo 是白色的，遮罩变白前必须先退场，否则糊成一片白。
+- **圆点居中**：`HeroHeadline` 里给圆点套 `Box(fillMaxWidth, contentAlignment = Center)`；标题仍左对齐（用户 22:19 圈出来的问题）。
+- **透明 PNG 片名**：`TmdbMeta` 新增 `logoUrl` / `logoAspect`，数据来自 `images.logos`。挑选规则在 `TmdbRepository.pickLogo`：**只收 `.png`**（TMDB 混着 `.svg`，Coil 没有 SVG 解码器）、语言 zh > en > 无语言、同语言取最宽、宽高比 < 1.1 的方图跳过。轮播来自 `/trending`（列表接口不带 images），所以 `withLogos()` 并发补查 `/3/{type}/{id}/images`，按 id 永久缓存（含负结果）。UI 里 `AsyncImage(Fit + CenterStart, 高 56dp, 宽 82%)`，缺失或加载失败**无痕退回文本标题**。
+- **下拉刷新转圈卡死（根因 + 三处兜底）**：
+  - 根因：`refreshing = false` 写在加载协程最后一行，请求挂住 / 协程被取消就永远执行不到，指示器定格在 56dp（22:13 截图顶部那颗白圆）。
+  - ① `withTimeoutOrNull(15s)` 整体超时 + `try/finally` 收尾；② 四个请求各自 `safe{}` 吞异常但**放行 CancellationException**（不放行会让超时失效）；③ `StandardPullToRefreshBox` 加自愈协程：非刷新态、手指离开 >1.2s、无动画在跑，就把 offset 强制归零。
+  - 顺带：下拉刷新现在**强制绕过 30 分钟 `rowCache`**（`trending/list` 新增 `force` 参数），否则「刷新」其实什么都没拉。
+- **状态栏沉浸两个问题**：
+  - 图标颜色：`AppTheme` 有个祖先 `SideEffect` 按主题写 `isAppearanceLightStatusBars`，把首页设的值覆盖了（22:18 截图里深色图标压在暗海报上）。改成首页用 **`SideEffect` + 上次值去重**（子节点的 SideEffect 晚于祖先执行，稳定拿最后一次写入权），`onDispose` 还原。规则：浅色主题且遮罩进度 > 0.5 才用深色图标；深色主题恒浅色。
+  - 内容钻进状态栏：B 层视口加 `padding(top = statusBar 高度)`，首块高度相应减去 `statusBarTop`，片名底部仍与海报底部对齐（首屏观感不变），滚上去的内容止步于状态栏下沿。
+- **缓存版本 6 → 7**（`TmdbMeta` 加了 logo 字段，旧条目没有，bump 一次让 logo 立即生效）。
+- **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。未提交，等用户自测。
+
+### 8.20 首页：片名秒出 + banner 手势重做 + 文案跟手横滑（2026-11-07 22:4x 装机，用户自测）
+- **需求原话**：「进入首页后片名好久才加载上来」「首页很难滑动 banner，不知道是不是自动滚动打断了还是手势区域不对」「滑动的时候片名信息电影介绍应该跟着海报一起左右滚动」。
+- **片名慢的三层原因与修法**：
+  1. 首屏等四个榜单全部 `await` 完才 `heroEntries = …` → 首屏时间 = 最慢的那个请求。改成**轮播先到就先出海报和片名**（`firstLoad = false` 提前），三行榜单随后补。
+  2. `withLogos()` 要等 8 条 `images` 请求全部返回才整批替换。改成 `TmdbRepository.logoOf(meta)` **单条接口**，UI 层 `forEach { launch { … } }` 并发跑，谁先回来先替换谁（`withLogos` 已删除）。
+  3. **最要命的一条**：`HeroTitle` 原来在 `logoUrl` 非空时直接画 `AsyncImage`，PNG 还没下载完就是**一块空白** —— 用户看到的是「文本标题 → 空白 → logo」。现在文本先垫在下面，`onSuccess` 之后才 `alpha` 接管，`onError` 退回文本。
+- **banner 难滑的三个原因与修法**：
+  1. `detectHorizontalDragGestures` 只在「横向先撞到 touchSlop」时成立，斜向划一下就被外层 `verticalScroll` 抢走，且没法主动让位。改用自写 `Modifier.heroSwipe`（`awaitEachGesture`）：累计位移判主轴，**横向占优才消费**，纵向占优一个事件都不消费直接退出。**抬手必须立刻 `break`**，否则会在事件流上挂死、点击也等不到后续事件。
+  2. 原吸附阈值是 `currentPageOffsetFraction > 0.5`，等于**必须拖过半屏**才翻页。改成「甩动速度 > 400dp/s 或位移 > 25%」。
+  3. 自动轮播 `delay(4500)` 的定时器可能正好在用户拖到一半时 `animateScrollToPage`，把手势抢走；且 `dragging` 原来靠 `onDragStart`（要过 slop）才置位，空档期保护不到。现在**手指落下即 `dragging = true`**，循环条件加 `pagerState.isScrollInProgress`，任一成立就重新计时；手指落下时还 `snapJob?.cancel()` 掐掉上一轮吸附动画（否则动画每帧写回 offset，拖动被盖掉）。
+- **文案跟手横滑**：`HeroHeadline` 改签名 `entries + pagerState`，内部叠「当前页」与「邻页」两块文案，各自按 `currentPageOffsetFraction` 平移**整屏宽**（不能用文案区宽度：左右各 20dp 会让邻页提前 40dp 冒头）。拖过一半 `currentPage` 翻转、偏移反号，两层内容互换，几何完全连续。邻页用 `matchParentSize` 包一层底部对齐容器，避免两页行数不同导致整块高度抖动。**不要退回 `settledEntry` 单条渲染**——那样滑动中途文案是定住的。圆点不参与平移。
+- **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。未提交，等用户自测。
+
+### 8.21 首页磁盘快照 + 底部导航栏沉浸（2026-11-07 23:0x 装机，用户自测）
+- **需求原话**：「把下载的各种首页数据做个缓存，这样可以避免用户首页进来是空白的」「刚进来的时候图标显示突兀因为有大白底，直到往上划的时候才算和谐」。
+- **`HomeCache`（新文件 `data/tmdb/HomeCache.kt`）**：把「轮播 + 三行榜单」整份写成 `filesDir/home_snapshot.json`。`TmdbRepository.init` 里同步 `HomeCache.init(context)`。
+  - **不设硬过期**。快照只负责挡空白，新鲜度交给 `TmdbRepository` 的 1 小时 / 30 分钟内存 TTL —— 几天前的海报墙也比白屏强。
+  - **写盘合并**：`save()` 连续调用时只调度一次，900ms 后写当时的最新内存快照（八条 logo 陆续到只落盘一次）。
+  - **空内容不覆盖**：一次全挂的加载不会把好快照冲成空文件。
+  - `VERSION` 字段：`TmdbMeta` 结构变化时 bump，旧文件直接作废。
+- **加载顺序（四层）**：
+  1. **内存快照**（`HomeCache.peek()`，同步）→ 同进程切 Tab 回来首帧就有内容，不闪骨架。
+  2. **磁盘快照**（`HomeCache.load()`，IO）→ 冷启动几十毫秒铺出上次画面。
+  3. **网络**：轮播先到就先替换首屏；一条都没回来时**保留快照**不冲空。
+  4. **下拉刷新**：`force = true` 绕过内存 TTL，不读快照（避免旧内容盖新内容）。
+- **`keepLogos`**：`/trending` 与榜单接口都不带 `images`，网络刷新拿到的新对象 `logoUrl` 为空。覆盖前把旧数据里已查到的 logo 搬过来，否则片名会从艺术字退回文本再查一次，肉眼闪一下。
+- **拉取时机（定案）**：冷启动/进首页 → 快照先渲染 + 静默网络刷新（不显示下拉圈）；进程内 30 分钟 / 1 小时内再进 → 纯内存命中，零请求；下拉 → 强制刷新并回写快照。
+- **底部导航栏沉浸**：
+  - Pager 不再统一 `padding(bottom = bottomBar)`，首页铺到导航栏底下（导航栏透明时透出的正是海报下方的模糊延续）；其它四页在 `else` 分支里自己让出这段高度，观感不变。首页底部 `Spacer` 改成 `108.dp + bottomInset`，最后一行能滚出来。
+  - `homeScrollState` 提升到 `AnimatedMainScreen`，导航栏读它判断：**第 1 页且滚动 < 0.5 × VEIL_FRACTION × heroHeight** 时 `immersive = true`。
+  - 沉浸态：导航栏背景 / 顶部分割线 → `Color.Transparent`，图标与文字 → 白色（选中纯白、未选中 72% 白），`NavGlyphIcon` 的 `knockout` → `HomeBaseColor`（否则实心电视机会掏出一个白三角）。全部走 `animateColorAsState(320ms)`，不做逐帧插值（逐帧读 scrollState 会让导航栏每滚一帧重组）。
+  - `VEIL_FRACTION` / `HERO_SCREEN_FRACTION` 从 `private` 改 `internal`，供主屏复用同一组阈值。
+- **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。未提交，等用户自测。
+
+
+### 8.22 底部导航栏改「悬浮圆角玻璃板」（2026-11-07 22:5x 装机，用户自测）
+- **需求原话**：「导航栏是实底，可以改成透明玻璃吗？并且用圆角矩形，直接悬浮在页面上」。
+- **结构**：原来的 `Column{分割线; Row(navigationBarsPadding)}` 铺满屏宽到底整块删除，改成一个透明 `Box` 承载的悬浮 `Row`：
+  - 左右留白 `NavBarSideMargin = 16dp`、底部留白 `NavBarBottomGap = 10dp` + 系统手势条高度；
+  - 高度 `62dp`、圆角 `26dp`、`shadow(14dp, clip=false)` + `border(1dp)`，面板内左右 6dp。
+  - 这几个常量在文件顶部，`NavBarSideMargin` / `NavBarBottomGap` 为 `internal`，方便别处对齐。
+- **玻璃质感三件套**：`panelBase`（沉浸态 `HomeBaseColor@46%`，普通态 `surface@78%`）+ 竖向渐变（上 84% alpha、下 100%，模拟厚度衰减）+ 1dp 描边（沉浸白 22%，浅色黑 7%，深色白 12%）。全部走 `animateColorAsState(320ms)`。
+- **不是真的实时背景模糊**：纯 Compose 无法对「背后内容」做高斯模糊（`Modifier.blur` / `RenderEffect` 只作用于自身图层），要真模糊得引 Haze 之类的库或做 RenderNode 快照。首页底图本身已经是海报的模糊延续，所以看上去就是玻璃；其余页底部内容由 `contentPadding` 让开，面板下方是纯底色，不需要模糊。
+- **替代掉的分割线**：原顶部 0.5dp 分割线删掉（悬浮面板靠描边+阴影定边界），沉浸态不再需要「分割线变透明」这套逻辑。
+- **沉浸判据不变**：`selectedIndex == 0 && scroll < heroHeightPx * VEIL_FRACTION * 0.5f`。沉浸时面板走深色玻璃 + 白字，普通态浅色玻璃 + 主题色图标。
+- **布局联动**：左右/底部留白写在 `bottomBar` 内部，因此 `Scaffold` 的 `calculateBottomPadding()` 自动变成 `62 + 10 + 手势条`，各页 `contentPadding` 与首页 `Spacer(108.dp + bottomInset)` 全部自动跟上，无需改调用方。
+- **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。未提交，等用户自测。
+
+
+### 8.23 导航栏去面板定案：只保留图标与文字（2026-11-07 23:40 提交，用户自测）
+- **问题现象**：分类页 / 设置页底部，圆角矩形之外还有「一层铺满屏宽的白」，首页则看不出异常。
+- **定位过程**（用户要求做隔离实验）：
+  1. 先把整条 `bottomBar` 摘掉（临时开关）→ 白层消失，确认是导航栏自己画的。
+  2. 再把面板填充 / 折射 / 外缘全部跳过、只留图标文字 → 两页都干净。
+- **根因**：`Modifier.shadow(elevation = 18dp, clip = false)` 的阴影图层按**整行宽度**合成，
+  叠加半透明面板（普通态 `surface@38%`，在白色页面上几乎等于白），浅色页面上就是一块白板；
+  深色海报上因为 tint 走 `HomeBaseColor@22%` 与背景同色，所以只有首页看不出问题。
+- **定案**：`NavBarGlassPanel = false` —— **不画任何托底**，只有 5 个图标 + 文字浮在页面上
+  （两侧 16dp、底部 10dp + 手势条、高 62dp）。用户 23:36「可以非常完美呢」。
+- **保留的部分**：玻璃实现（`clip(NavBarShape)` → `drawBehind{填充 + 9dp 竖直渐变折射带 + 1dp 边缘光}`）
+  整段留在开关后面，翻 `true` 即可回来。**顺序必须是先 clip 再 draw** ——
+  上一版是 `shadow → drawWithCache → clip`，绘制发生在裁切之前，这正是白层的结构成因。
+- **顺带修掉的**：首页底部渐隐层的终点改为跟随 `bottomInset`（= bottomBar 高度）。
+  原来硬编码 104dp，而导航栏上沿在 ~120dp，玻璃背后「上半截是渐显内容、下半截是纯底色」，
+  那道斜接边界会被半透明面板再透一次，形成横条。
+- **构建**：`assembleDebug` BUILD SUCCESSFUL + `adb install -r` Success。
+
 
 ---
 

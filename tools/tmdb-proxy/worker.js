@@ -76,6 +76,10 @@ async function serveThumb(key) {
 const ALLOWED_PATHS = [
   /^\/3\/configuration$/,
   /^\/3\/search\/(movie|tv|multi)$/,
+  /^\/3\/trending\/(all|movie|tv)\/(day|week)$/,
+  // 首页横滑榜单：正在热映 / 正在播出 / 高分 / 热门。
+  /^\/3\/movie\/(now_playing|upcoming|popular|top_rated)$/,
+  /^\/3\/tv\/(on_the_air|airing_today|popular|top_rated)$/,
   /^\/3\/(movie|tv)\/\d+$/,
   /^\/3\/(movie|tv)\/\d+\/(credits|images|videos|similar|recommendations)$/,
   /^\/3\/genre\/(movie|tv)\/list$/,
