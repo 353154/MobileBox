@@ -103,11 +103,13 @@ object TvBoxRepository {
     private var epgTemplateCandidates: List<String> = emptyList()
     @Volatile
     private var successfulTemplate: String? = null
+    /** 模板连续失败次数：失败够多就本次会话不再尝试，直接走全局兜底，避免每个频道都撞超时 */
+    private val epgTemplateFailures = ConcurrentHashMap<String, Int>()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    // 应用上下文：供 selectSite 持久化用户选中的站点（无需改调用点签名）
+    // 应用上下文：供 selectSite 持久化用户选中的站点、以及 ensureChannelEpg 的全局节目单兜底使用
     @Volatile
     private var appContext: Context? = null
     // initFromCache 幂等：详情页返回时 AnimatedMainScreen 会重新组合，
@@ -354,13 +356,15 @@ object TvBoxRepository {
             Log.i("MB-EPG", "模板 ${newCandidates.size} 个，首选 ${newCandidates.firstOrNull()}")
         }
         val newTemplate = newCandidates.firstOrNull()
+        if (newTemplate == null && staticUrls.isEmpty()) {
+            // 订阅里没有任何 EPG 地址也要预取：全局 XMLTV 兜底不依赖配置
+            _epgPrograms.value = emptyMap()
+            prefetchDefaultChannels()
+            return
+        }
         // 不依赖直播页是否被组合：模板就绪后直接在数据层为首屏频道预取节目单。
         // ensureChannelEpg 内部按「频道 + 日期」去重，重复调用不会产生额外请求。
         prefetchDefaultChannels()
-        if (newTemplate == null && staticUrls.isEmpty()) {
-            _epgPrograms.value = emptyMap()
-            return
-        }
         if (staticUrls.isEmpty()) return   // 纯模板模式：结果由 ensureChannelEpg 按需写入
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -379,14 +383,45 @@ object TvBoxRepository {
         }
     }
 
-    /** 首屏可见频道预取：避免节目单查询依赖 LazyColumn / Pager 的组合时机 */
+    /** 频道在 EPG 索引里可能出现的所有 key（tvg-id / 原始名 / 去掉清晰度后缀的名字） */
+    private fun epgKeys(channel: LiveChannel): List<String> = buildList {
+        channel.tvgId?.let { add(it) }
+        add(channel.name)
+        add(channel.name.replace(Regex("""\d+[KkPp]"""), ""))
+    }.map { EpgPrograms.normalize(it) }.filter { it.isNotEmpty() }.distinct()
+
+    /**
+     * 节目单预取。
+     *
+     * 全局 XMLTV 是本地数据（已下载/已缓存），一次就能覆盖绝大多数频道，
+     * 所以先用它把所有频道一次性铺满；只有它没有的频道（港澳 / 日韩等）
+     * 才逐个走订阅模板，避免「每个频道各发一次注定失败的请求」。
+     */
     private fun prefetchDefaultChannels() {
-        val channels = _liveChannels.value
-            .distinctBy { EpgPrograms.normalize(it.name) }
-            .take(12)
+        val channels = _liveChannels.value.distinctBy { EpgPrograms.normalize(it.name) }
         if (channels.isEmpty()) return
+        val ctx = appContext
         CoroutineScope(Dispatchers.IO).launch {
-            channels.forEach { ensureChannelEpg(it) }
+            if (ctx != null) {
+                val global = EpgGlobalSource.load(ctx)
+                if (global.isNotEmpty()) {
+                    val updated = _epgPrograms.value.toMutableMap()
+                    var filled = 0
+                    for (channel in channels) {
+                        val keys = epgKeys(channel)
+                        val slots = keys.firstNotNullOfOrNull { global[it] } ?: continue
+                        keys.forEach { updated[it] = slots }
+                        filled++
+                    }
+                    synchronized(epgLock) { _epgPrograms.value = updated }
+                    Log.i("MB-EPG", "全局节目单覆盖 $filled/${channels.size} 个频道")
+                }
+            }
+            // 全局源没覆盖到的频道（XMLTV 里没有这些台）再按模板补
+            val covered = _epgPrograms.value.keys
+            channels.filter { channel -> epgKeys(channel).none { it in covered } }
+                .take(12)
+                .forEach { ensureChannelEpg(it) }
         }
     }
 
@@ -396,46 +431,66 @@ object TvBoxRepository {
      * LazyColumn 只组合可见项，因此请求数约等于屏幕上的频道数，不会全量轰炸接口。
      */
     fun ensureChannelEpg(channel: LiveChannel) {
+        val key = EpgPrograms.normalize(channel.name)
+        if (key.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(java.util.Date(now))
         val preferred = successfulTemplate
+        // 连续失败的模板本次会话直接跳过：订阅里的 EPG 域名一旦失效，
+        // 每个频道都去撞一次握手超时会把首屏拖慢好几秒。
         val candidates = buildList {
             preferred?.let { add(it) }
             addAll(epgTemplateCandidates.filter { it != preferred })
-        }
-        if (candidates.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(java.util.Date(now))
-        val key = EpgPrograms.normalize(channel.name)
-        if (key.isEmpty()) return
+        }.filter { (epgTemplateFailures[it] ?: 0) < 3 }
+        val ctx = appContext
+        if (candidates.isEmpty() && ctx == null) return
+        val dayKey = day
         synchronized(epgLock) {
-            if (epgFetchedDay[key] == day) return
-            epgFetchedDay[key] = day
+            if (epgFetchedDay[key] == dayKey) return
+            epgFetchedDay[key] = dayKey
         }
         CoroutineScope(Dispatchers.IO).launch {
-            var slots: List<EpgSlot>? = null
-            var usedTemplate: String? = null
-            for (t in candidates) {
-                val result = TvBoxParser.fetchChannelEpg(t, channel.name, now).getOrNull()
-                if (!result.isNullOrEmpty()) {
-                    slots = result
-                    usedTemplate = t
-                    break
-                }
-                Log.i("MB-EPG", "模板失败 ${channel.name} <- $t")
-            }
-            val resolved = slots
-            if (resolved.isNullOrEmpty()) {
-                // 全失败：清掉当天标记，下次进入页面仍可重试
-                synchronized(epgLock) { epgFetchedDay.remove(key) }
-                Log.i("MB-EPG", "全部模板失败 ${channel.name}")
-                return@launch
-            }
-            successfulTemplate = usedTemplate
-            Log.i("MB-EPG", "命中 ${channel.name} ${resolved.size} 档 <- $usedTemplate")
             val candidateKeys = buildList {
                 channel.tvgId?.let { add(it) }
                 add(channel.name)
                 add(channel.name.replace(Regex("""\d+[KkPp]"""), ""))
-            }.map { EpgPrograms.normalize(it) }.filter { it.isNotEmpty() }.distinct()
+            }.map { EpgPrograms.normalize(it) }.filter { it.isNotEmpty() }
+
+            // 1. 先走全局 XMLTV 兜底：命中就是本地内存查询，零网络、零超时。
+            //    订阅里的 EPG 域名 2026-11 起已相继失效，先撞模板会让每个频道白等 1~2 秒。
+            var slots: List<EpgSlot>? = null
+            var source: String? = null
+            if (ctx != null) {
+                val global = EpgGlobalSource.load(ctx, now)
+                if (global.isNotEmpty()) {
+                    slots = candidateKeys.firstNotNullOfOrNull { global[it] }
+                    if (slots != null) source = "全局XMLTV"
+                }
+            }
+            // 2. 全局源没有这个频道（或整源不可用）时，再回落到订阅模板
+            if (slots.isNullOrEmpty()) {
+                for (t in candidates) {
+                    val result = TvBoxParser.fetchChannelEpg(t, channel.name, now).getOrNull()
+                    if (!result.isNullOrEmpty()) {
+                        slots = result
+                        source = t
+                        epgTemplateFailures[t] = 0
+                        break
+                    }
+                    val fails = (epgTemplateFailures[t] ?: 0) + 1
+                    epgTemplateFailures[t] = fails
+                    Log.i("MB-EPG", "模板失败 ${channel.name} <- $t ($fails)")
+                }
+            }
+            val resolved = slots
+            if (resolved.isNullOrEmpty()) {
+                // 真的没有：清掉当天标记，下次进入页面仍可重试
+                synchronized(epgLock) { epgFetchedDay.remove(key) }
+                Log.i("MB-EPG", "无节目单 ${channel.name}")
+                return@launch
+            }
+            if (source != null && source != "全局XMLTV") successfulTemplate = source
+            Log.i("MB-EPG", "命中 ${channel.name} ${resolved.size} 档 <- $source")
             synchronized(epgLock) {
                 val updated = _epgPrograms.value.toMutableMap()
                 candidateKeys.forEach { updated[it] = resolved }
