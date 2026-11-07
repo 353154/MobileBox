@@ -896,9 +896,12 @@ fun MobileVideoPlayer(
             }
         }
 
-        // 所有播放源都试完仍失败：不要黑框、不要卡片、不要按钮，只留「失败图标 + 一句提示」。
-        // 换源直接点详情页下方的播放源 chips，退出用系统返回键（详情页 BackHandler 走逆过程）。
-        if (fatalError != null) {
+        // 播放失败的提示：详情页终态失败 / 直播 / 横屏共用这一套 —— 不要黑框、不要卡片、不要按钮，
+        // 只留「失败图标 + 一句原因」。换源点详情页下方的播放源 chips，换频道点直播列表，
+        // 退出用系统返回键。原来的深色卡片里还塞了「重试播放 / 返回详情」两个按钮，
+        // 但文字色与容器同色、只剩两条没有内容的横条（用户 18:42 反馈「不知道是什么的条条」）。
+        val playbackErrorText = fatalError ?: playbackError
+        if (playbackErrorText != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -913,85 +916,13 @@ fun MobileVideoPlayer(
                 )
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = fatalError ?: "",
+                    text = playbackErrorText,
                     color = Color.White.copy(alpha = 0.92f),
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center
                 )
-            }
-        }
-
-        // 直播 / 横屏的错误卡片（带重试与返回），详情页自动换源接力不会走到这里。
-        if (fatalError == null && playbackError != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    // 只压一层薄暗：错误卡自身有底色，画面微微透出来更像「播放器还在，只是放不了」
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                // 用一张独立卡片把「图标 + 原因 + 操作」收成一个整体。
-                // 之前是散在全屏 Column 里，正好被控制条中央的播放/暂停大按钮压住（用户 14:39 反馈）。
-                Surface(
-                    color = Color(0xFF161B22).copy(alpha = 0.97f),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.widthIn(max = 320.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ErrorOutline,
-                            contentDescription = "错误",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(40.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "播放失败",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = playbackError ?: "播放异常",
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 13.sp,
-                            lineHeight = 18.sp,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = {
-                                    playbackError = null
-                                    retryCount++
-                                },
-                                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("重试播放", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            }
-                            OutlinedButton(
-                                onClick = onBackClick,
-                                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                            ) {
-                                Text("返回详情", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
             }
         }
 
