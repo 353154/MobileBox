@@ -151,3 +151,16 @@ data class MacCmsVod(
     @SerializedName("vod_play_url")
     val vodPlayUrl: String? = null
 )
+
+/**
+ * 搜索命中项：同一部影片在多个采集站都会有，必须带上来源站点
+ * —— 列表 key 要唯一（各站自增 id 会撞），后续做「跨站多播放源」也要靠它定位。
+ */
+data class SearchHit(
+    val detail: com.damon.mobilebox.ui.player.VideoDetailData,
+    val siteKey: String,
+    val siteName: String
+) {
+    /** 列表唯一 key：站点 + 站内 id */
+    val key: String get() = "${siteKey}_${detail.id}"
+}

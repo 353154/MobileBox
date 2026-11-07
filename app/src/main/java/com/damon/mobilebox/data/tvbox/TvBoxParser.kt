@@ -709,7 +709,9 @@ object TvBoxParser {
         api: String,
         categoryId: String? = null,
         page: Int = 1,
-        keyword: String? = null
+        keyword: String? = null,
+        /** 整次调用（含连接/读取）的超时；跨站搜索需要它，否则一个卡死的站点能拖住整个搜索 */
+        callTimeoutMs: Long? = null
     ): Result<MacCmsResponse> = withContext(Dispatchers.IO) {
         try {
             var fullUrl = api.trim()
@@ -732,7 +734,13 @@ object TvBoxParser {
                 .header("User-Agent", DEFAULT_UA)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            val client = if (callTimeoutMs != null && callTimeoutMs > 0) {
+                // newBuilder 复用同一个 Dispatcher / 连接池，只收紧本次调用超时
+                httpClient.newBuilder().callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS).build()
+            } else {
+                httpClient
+            }
+            val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
                 return@withContext Result.failure(Exception("请求采集源失败: ${response.code}"))
             }

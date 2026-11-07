@@ -17,6 +17,7 @@ import com.damon.mobilebox.data.tvbox.TvBoxRepository
 import com.damon.mobilebox.ui.components.SharedPosterTransition
 import com.damon.mobilebox.ui.detail.MovieDetailScreen
 import com.damon.mobilebox.ui.main.AnimatedMainScreen
+import com.damon.mobilebox.ui.search.SearchScreen
 import com.damon.mobilebox.ui.theme.ThemeManager
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -51,7 +52,21 @@ fun AppNavigation(themeManager: ThemeManager) {
                         val encodedTitle = try { URLEncoder.encode(movie.title, "UTF-8") } catch (_: Exception) { "" }
                         val encodedPoster = try { URLEncoder.encode(movie.posterUrl, "UTF-8") } catch (_: Exception) { "" }
                         navController.navigate("detail/${movie.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
-                    }
+                    },
+                    onNavigateToSearch = { navController.navigate("search") }
+                )
+            }
+            composable("search") {
+                SearchScreen(
+                    onBack = { navController.popBackStack() },
+                    onMovieClick = { hit ->
+                        TvBoxRepository.selectedDetail = hit.detail
+                        val encodedTitle = try { URLEncoder.encode(hit.detail.title, "UTF-8") } catch (_: Exception) { "" }
+                        val encodedPoster = try { URLEncoder.encode(hit.detail.posterUrl, "UTF-8") } catch (_: Exception) { "" }
+                        navController.navigate("detail/${hit.detail.id.trim()}?title=$encodedTitle&poster=$encodedPoster")
+                    },
+                    sharedTransitionScope = this@SharedTransitionLayout,
+                    animatedVisibilityScope = this@composable
                 )
             }
             composable(

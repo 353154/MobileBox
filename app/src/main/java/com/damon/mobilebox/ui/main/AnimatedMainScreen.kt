@@ -104,7 +104,8 @@ fun AnimatedMainScreen(
     themeManager: ThemeManager,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
-    onNavigateToDetail: (VideoDetailData) -> Unit = {}
+    onNavigateToDetail: (VideoDetailData) -> Unit = {},
+    onNavigateToSearch: () -> Unit = {}
 ) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val coroutineScope = rememberCoroutineScope()
@@ -209,9 +210,7 @@ fun AnimatedMainScreen(
                                     Column(modifier = Modifier.fillMaxSize()) {
                                         OptimizedTopBar(
                                             sourceName = selectedSite?.name ?: "点击配置订阅",
-                                            onSearchClick = {
-                                                coroutineScope.launch { pagerState.scrollToPage(1) }
-                                            },
+                                            onSearchClick = onNavigateToSearch,
                                             onSourceClick = { showSourceDialog = true }
                                         )
                                         HomeGridContent(

@@ -5,12 +5,16 @@ import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.damon.mobilebox.BuildConfig
 import com.damon.mobilebox.ui.player.VideoDetailData
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -500,6 +504,54 @@ object TvBoxRepository {
     }
 
     /**
+     * 跨站点搜索：并发向所有可搜索站点发 `ac=videolist&wd=` 请求，合并去重后返回。
+     *
+     * 每个站只取第一页（20 条）。同名影片只保留信息最全的一条（总集数最多），
+     * 名称完全匹配的排在最前 —— 各站 id 是自增的、会互相撞，所以列表 key 用 [SearchHit.key]。
+     */
+    suspend fun searchAll(keyword: String): List<SearchHit> = withContext(Dispatchers.IO) {
+        val word = keyword.trim()
+        if (word.isEmpty()) return@withContext emptyList()
+        val sites = _currentSites.value.filter {
+            it.searchable != 0 && it.api.startsWith("http", ignoreCase = true)
+        }
+        if (sites.isEmpty()) return@withContext emptyList()
+
+        val merged = coroutineScope {
+            sites.map { site ->
+                async {
+                    runCatching {
+                        // 8 秒封顶：某个站点卡住时不能把整个搜索拖到十几秒
+                        TvBoxParser.fetchMacCmsVodList(
+                            site.api,
+                            page = 1,
+                            keyword = word,
+                            callTimeoutMs = 8_000
+                        ).getOrNull()?.list.orEmpty()
+                            .map { vod ->
+                                SearchHit(
+                                    detail = TvBoxParser.parseMacCmsVodToDetail(vod),
+                                    siteKey = site.key,
+                                    siteName = site.name
+                                )
+                            }
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten()
+        }
+        if (merged.isEmpty()) return@withContext emptyList()
+
+        merged
+            .groupBy { it.detail.title.trim() }
+            .values
+            .mapNotNull { group -> group.maxByOrNull { it.detail.routes.sumOf { r -> r.episodes.size } } }
+            .sortedWith(
+                compareByDescending<SearchHit> { it.detail.title.trim() == word }
+                    .thenByDescending { it.detail.routes.sumOf { r -> r.episodes.size } }
+            )
+    }
+
+    /**
      * 对跨数据源 (如同时存在 TXT 和 M3U 直播源) 的同组同名电视台进行去重与多线路归一化聚合
      */
     fun deduplicateGroups(rawGroups: List<LiveChannelGroup>): List<LiveChannelGroup> {
@@ -739,6 +791,18 @@ object TvBoxRepository {
                 _realCategories.value = emptyList()
                 _liveGroups.value = emptyList()
                 _liveChannels.value = emptyList()
+
+                // 例外：分发版内置了默认订阅源（gradle 从 local.properties 注入）时自动订阅一次，
+                // 让收到 APK 的人装上就能直接看片，不用自己去设置里找源。
+                // 注意这不是「内置假数据」—— 源地址来自真实订阅，解析失败也不会伪造任何内容。
+                val builtInUrl = BuildConfig.DEFAULT_SUB_URL
+                if (builtInUrl.isNotBlank()) {
+                    Log.i("MB-SUB", "首次启动，使用内置默认订阅: $builtInUrl")
+                    val builtInResult = loadSubscription(context, builtInUrl)
+                    if (builtInResult.isFailure) {
+                        Log.w("MB-SUB", "内置默认订阅失败: ${builtInResult.exceptionOrNull()?.message}")
+                    }
+                }
                 return
             }
 
