@@ -1,0 +1,15 @@
+# Cloudflare Worker 部署配置（命令行用）
+#
+# 部署三步（在 tools/tmdb-proxy 目录下执行）：
+#   npx wrangler login                     # 浏览器里点授权
+#   npx wrangler secret put TMDB_TOKEN     # 粘贴 v4 Read Access Token
+#   npx wrangler deploy                    # 输出 https://mobilebox-tmdb.<子域>.workers.dev
+#
+# 名字可以改，但要全局唯一；workers.dev 子域与账号绑定，不需要额外配置。
+
+name = "mobilebox-tmdb"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# 纯代理，不留任何持久化存储；请求与响应都不落盘。
+# 密钥通过 secret 注入，不写在这个文件里，避免误提交。
